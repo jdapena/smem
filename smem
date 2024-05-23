@@ -17,6 +17,8 @@ import os
 import pwd
 import re
 import sys
+import tarfile
+from io import TextIOWrapper
 from multiprocessing import Pool, cpu_count
 from typing import Dict, List, Optional, Sized, Union
 
@@ -39,30 +41,111 @@ class UIDCache(object):
         except KeyError:
             return str(uid)
 
+class ProcReader(object):
+    def __init(self) -> None:
+        pass
+
+    def listpids(self) -> List[str]:
+        return []
+
+    def piduser(self, pid):
+        return -1
+
+    def read(self, filename) -> str:
+        """Return the file as a string"""
+        return ""
+
+    def username(self, uid):
+        return "?" if uid == -1 else "%d" % uid
+
+    def use_smaps_rollup(self):
+        return False
+
+    def allowed_cpu_count(self):
+        return 1
+
+class ProcFSReader(ProcReader):
+    def __init__(self) -> None:
+        self._uidcache = UIDCache()
+
+    def listpids(self) -> List[str]:
+        for e in os.listdir("/proc"):
+            if e.isdigit():
+                yield e
+
+    def piduser(self, pid):
+        """Return PID user data"""
+        try:
+            return os.stat("/proc/%d" % pid).st_uid
+        except:
+            return -1
+
+    def read(self, filename) -> str:
+        """Return the file as a string"""
+        return open("/proc/" + filename).read()
+
+    def username(self, uid):
+        """Return username from UID cache"""
+        return "?" if uid == -1 else self._uidcache(uid)
+
+    def use_smaps_rollup(self):
+        return os.access("/proc/%s/smaps_rollup" % os.getpid(), os.R_OK)
+
+    def allowed_cpu_count(self):
+        return cpu_count()
+
+class TarfileReader(ProcReader):
+    def __init__(self, filename) -> None:
+        self._filename = filename
+        self._tar = tarfile.open(filename)
+
+    def listpids(self) -> List[str]:
+        for tarinfo in self._tar:
+            if tarinfo.name.endswith('/smaps'):
+                d,f = tarinfo.name.split('/')
+                yield d
+
+    def piduser(self, pid):
+        tarinfo = self._tar.getmember("%d" % pid)
+        return tarinfo.uid if tarinfo else -1
+
+    def read(self, filename) -> str:
+        """Return the file as a string"""
+        return TextIOWrapper(self._tar.extractfile(filename)).read()
 
 class Proc(object):
     """Helper class to handle /proc/ filesystem data"""
 
     def __init__(self) -> None:
+        self._reader = options.source and TarfileReader(options.source) or ProcFSReader()
         pass
 
-    @staticmethod
-    def listdir() -> List[str]:
-        return os.listdir("/proc")
+    def listpids(self) -> List[str]:
+        return self._reader.listpids()
 
-    @staticmethod
-    def read(filename) -> str:
+    def read(self, filename) -> str:
         """Return the file as a string"""
-        return open("/proc/" + filename).read()
+        return self._reader.read(filename)
 
     def readlines(self, filename):
         """Return the file as an list of lines"""
         return self.read(filename).splitlines(True)
 
+    def piduser(self, pid):
+        return self._reader.piduser(pid)
+
+    def username(self, uid):
+        return self._reader.username(uid)
+
     def version(self):
         """Return Linux version data"""
         return self.readlines("version")[0]
 
+    def use_smaps_rollup(self):
+        return self._reader.use_smaps_rollup()
+
+    def allowed_cpu_count(self):
+        return self._reader.allowed_cpu_count()
 
 class MemData(Proc):
     """Class accessing and storing /proc/meminfo data"""
@@ -87,24 +170,17 @@ class ProcessData(Proc):
 
     def __init__(self) -> None:
         super().__init__()
-        self._uidcache = UIDCache()
 
     def _iskernel(self, pid):
         """Check if it's a kernel pid"""
         return self.pidcmd(pid) == ""
 
-    @staticmethod
-    def _stat(pid) -> os.stat_result:
-        """Stat result for the pid"""
-        return os.stat("/proc/" + pid)
-
     def pids(self) -> List[int]:
         """Get a list of PID's"""
         return [
             int(e)
-            for e in self.listdir()
-            if e.isdigit()
-            and not self._iskernel(e)
+            for e in self.listpids()
+            if not self._iskernel(e)
             and ((options.pid and options.pid == int(e)) or not options.pid)
         ]
 
@@ -119,17 +195,6 @@ class ProcessData(Proc):
             return c.replace("\0", " ")
         except:
             return "?"
-
-    def piduser(self, pid):
-        """Return PID user data"""
-        try:
-            return self._stat("%d" % pid).st_uid
-        except:
-            return -1
-
-    def username(self, uid):
-        """Return username from UID cache"""
-        return "?" if uid == -1 else self._uidcache(uid)
 
     def pidusername(self, pid):
         """Return PID username"""
@@ -192,13 +257,13 @@ def pidmaps(pid) -> Dict[int, Dict[str, int]]:
     return maps
 
 
-def maptotals(pids):
+def maptotals(pids, allowed_cpu_count):
     filtered_pids = filter(lambda pid: not filters(options.processfilter, pid, proc.pidcmd) and
                                        not filters(options.userfilter, pid, proc.pidusername),
                            pids)
 
     totals = {}
-    with Pool(processes=cpu_count()) as pool:
+    with Pool(processes=allowed_cpu_count) as pool:
         for maps in pool.map(pidmaps, filtered_pids):
             if len(maps) == 0:
                 continue
@@ -290,13 +355,13 @@ def pidtotals(pid, pidmaps_f=pidmaps) -> Dict[str, int]:
     return t
 
 
-def usertotals(pids, pidmaps_f=pidmaps):
+def usertotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
     filtered_pids = list(filter(lambda p: not filters(options.processfilter, p, proc.pidcmd) and
                                           not filters(options.userfilter, p, proc.pidusername),
                                 pids))
 
     totals = {}
-    with Pool(processes=cpu_count()) as pool:
+    with Pool(processes=allowed_cpu_count) as pool:
         all_maps = pool.map(pidmaps_f, filtered_pids)
         for i in range(len(all_maps)):
             maps = all_maps[i]
@@ -390,12 +455,12 @@ def filters(opt, arg, *sources) -> bool:
     return True
 
 
-def processtotals(pids, pidmaps_f=pidmaps):
+def processtotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
     filtered_pids = filter(lambda pid: not filters(options.processfilter, pid, proc.pidcmd) and
                                        not filters(options.userfilter, pid, proc.pidusername),
                            pids)
     totals = {}
-    with Pool(processes=cpu_count()) as pool:
+    with Pool(processes=allowed_cpu_count) as pool:
         for p in pool.map(functools.partial(pidtotals, pidmaps_f=pidmaps_f), filtered_pids):
             if p["maps"] != 0:
                 totals[p["pid"]] = p
@@ -416,7 +481,7 @@ def widthstr(field, width, default) -> str:
 
 def showpids(pidmaps_f=pidmaps) -> None:
     p = proc.pids()
-    pt = processtotals(p, pidmaps_f)
+    pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
 
     def showuser(p):
         if options.numeric:
@@ -477,7 +542,7 @@ def showpids(pidmaps_f=pidmaps) -> None:
 
 def showmaps() -> None:
     p = proc.pids()
-    pt = maptotals(p)
+    pt = maptotals(p, proc.allowed_cpu_count())
 
     fields = dict(
         map=(
@@ -568,7 +633,7 @@ def showmaps() -> None:
 def showusers(pidmaps_f=pidmaps) -> None:
 
     p = proc.pids()
-    pt = usertotals(p, pidmaps_f=pidmaps_f)
+    pt = usertotals(p, proc.allowed_cpu_count(), pidmaps_f=pidmaps_f)
 
     def showuser(u):
         if options.numeric:
@@ -949,9 +1014,9 @@ def main() -> None:
     ignore_autosize = set()
 
     # Check if Linux kernel supports smaps_rollup
-    pidmaps_f = pidmaps_rollup if os.access("/proc/%s/smaps_rollup" % os.getpid(), os.R_OK) else pidmaps
 
     proc = ProcessData()
+    pidmaps_f = pidmaps_rollup if proc.use_smaps_rollup() else pidmaps
 
     try:
         if options.mappings:
