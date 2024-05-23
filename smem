@@ -256,8 +256,26 @@ def pidmaps(pid) -> Dict[int, Dict[str, int]]:
         return f
     return maps
 
+def aggregate_name(name):
+    if name.startswith("[") or name.startswith("<"):
+        return name
+    if name.startswith("/usr/lib") or name.startswith("/lib"):
+        return "[system libraries]"
+    elif name.startswith("/dev/shm"):
+        return "[shm]"
+    elif name.startswith("/dev"):
+        return "[other devices]"
+    elif name.startswith("/usr/share/fonts") or name.startswith("/var/cache/fontconfig"):
+        return "[fonts]"
+    elif name.startswith("/memfd:"):
+        return "[memfd]"
+    elif name.endswith(".so"):
+        return "[other libraries]"
+    elif name.endswith(".pak") or name.endswith(".dat"):
+        return "[resources]"
+    return "[other mappings]"
 
-def maptotals(pids, allowed_cpu_count):
+def maptotals(pids, allowed_cpu_count, is_aggregate=False):
     filtered_pids = filter(lambda pid: not filters(options.processfilter, pid, proc.pidcmd) and
                                        not filters(options.userfilter, pid, proc.pidusername),
                            pids)
@@ -270,6 +288,8 @@ def maptotals(pids, allowed_cpu_count):
             seen = {}
             for m in list(maps.keys()):
                 name = maps[m]["name"]
+                if is_aggregate:
+                    name = aggregate_name(name)
                 if name not in totals:
                     t = dict(
                         size=0,
@@ -540,9 +560,9 @@ def showpids(pidmaps_f=pidmaps) -> None:
     showtable(list(pt.keys()), fields, columns.split(), options.sort or "pss")
 
 
-def showmaps() -> None:
+def showmaps(is_aggregate=False) -> None:
     p = proc.pids()
-    pt = maptotals(p, proc.allowed_cpu_count())
+    pt = maptotals(p, proc.allowed_cpu_count(), is_aggregate)
 
     fields = dict(
         map=(
@@ -931,6 +951,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
 
     show_group = argparser.add_argument_group("Show")
     show_group.add_argument(
+        "-A", "--aggregates", action="store_true", help="Show mapping aggregates"
+    )
+
+    show_group.add_argument(
         "-m", "--mappings", action="store_true", help="Show mappings"
     )
 
@@ -1021,6 +1045,8 @@ def main() -> None:
     try:
         if options.mappings:
             showmaps()
+        elif options.aggregates:
+            showmaps(True)
         elif options.users:
             showusers(pidmaps_f)
         elif options.system:
