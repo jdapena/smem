@@ -322,9 +322,6 @@ def maptotals(pids, allowed_cpu_count, is_aggregate=False):
                     pids_lists.setdefault(name, []).append(str(pid))
                 totals[name] = t
     for name in list(totals.keys()):
-        print(name)
-        print(totals[name])
-        print(pids_lists[name])
         totals[name]["pids_list"] = ",".join(pids_lists[name])
 
 
