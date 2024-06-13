@@ -209,6 +209,9 @@ def totalmem():
         return memdata("memtotal")
 
 
+def pidmaps_with_pid(pid) -> (int, Dict[int, Dict[str,int]]):
+    return pid, pidmaps(pid)
+
 def pidmaps(pid) -> Dict[int, Dict[str, int]]:
     maps = {}
     start = None
@@ -259,7 +262,9 @@ def pidmaps(pid) -> Dict[int, Dict[str, int]]:
 def aggregate_name(name):
     if name.startswith("[") or name.startswith("<"):
         return name
-    if name.startswith("/usr/lib") or name.startswith("/lib"):
+    elif name.startswith("anon_inode"):
+        return name
+    elif name.startswith("/usr/lib") or name.startswith("/lib"):
         return "[system libraries]"
     elif name.startswith("/dev/shm"):
         return "[shm]"
@@ -281,8 +286,9 @@ def maptotals(pids, allowed_cpu_count, is_aggregate=False):
                            pids)
 
     totals = {}
+    pids_lists = {}
     with Pool(processes=allowed_cpu_count) as pool:
-        for maps in pool.map(pidmaps, filtered_pids):
+        for pid, maps in pool.map(pidmaps_with_pid, filtered_pids):
             if len(maps) == 0:
                 continue
             seen = {}
@@ -313,7 +319,14 @@ def maptotals(pids, allowed_cpu_count, is_aggregate=False):
                 if name not in seen:
                     t["pids"] += 1
                     seen[name] = 1
+                    pids_lists.setdefault(name, []).append(str(pid))
                 totals[name] = t
+    for name in list(totals.keys()):
+        print(name)
+        print(totals[name])
+        print(pids_lists[name])
+        totals[name]["pids_list"] = ",".join(pids_lists[name])
+
 
     return totals
 
@@ -580,11 +593,18 @@ def showmaps(is_aggregate=False) -> None:
             "number of mappings found",
         ),
         pids=(
-            "PIDs",
+            "PIDs count",
             lambda n: pt[n]["pids"],
             "% 5s",
             sum,
             "number of PIDs using mapping",
+        ),
+        pids_list=(
+            "PIDs list",
+            lambda n: pt[n]["pids_list"],
+            widthstr("pids_list", options.pids_width, 40),
+            len,
+            "list of pids",
         ),
         swap=(
             "Swap",
@@ -1010,6 +1030,13 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         default=-1,
         type=int,
         help="Text width for mapping names (0=as needed)",
+    )
+
+    width_group.add_argument(
+        "--pids-width",
+        default=-1,
+        type=int,
+        help="Text width for PIDS list names (0=as needed)",
     )
 
     argparser.add_argument(
