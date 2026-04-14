@@ -11,8 +11,10 @@
 from __future__ import print_function
 
 import argparse
+import csv
 import errno
 import functools
+import json
 import os
 import pwd
 import re
@@ -855,22 +857,37 @@ def autosize(columns: Sized, fields, rows):
 
 
 def showtable(rows, fields, columns, sort) -> None:
-    header = ""
-    table_format = ""
-    formatter = []
-
     if sort not in fields:
         showfields(fields, sort)
         sys.exit(-1)
-
-    mt = totalmem()
-    memdata = MemData()
-    st = memdata("swaptotal")
 
     missing = set(columns) - set(fields)
     if len(missing) > 0:
         showfields(fields, missing)
         sys.exit(-1)
+
+    sorted_rows = sorted(rows, key=lambda n: fields[sort][1](n), reverse=bool(options.reverse))
+
+    if options.output == 'json':
+        data = [{c: fields[c][1](n) for c in columns} for n in sorted_rows]
+        print(json.dumps(data, indent=2))
+        return
+
+    if options.output == 'csv':
+        writer = csv.writer(sys.stdout)
+        if not options.no_header:
+            writer.writerow(columns)
+        for n in sorted_rows:
+            writer.writerow([fields[c][1](n) for c in columns])
+        return
+
+    header = ""
+    table_format = ""
+    formatter = []
+
+    mt = totalmem()
+    memdata = MemData()
+    st = memdata("swaptotal")
 
     if options.autosize:
         colsizes = autosize(columns, fields, rows)
@@ -892,21 +909,14 @@ def showtable(rows, fields, columns, sort) -> None:
         table_format += f + " "
         header += f % fields[n][0] + " "
 
-    l = []
-    for n in rows:
-        r = [fields[c][1](n) for c in columns]
-        l.append((fields[sort][1](n), r))
-
-    l.sort(reverse=bool(options.reverse))
-
     if not options.no_header:
         print(header)
 
-    for k, r in l:
+    for n in sorted_rows:
+        r = [fields[c][1](n) for c in columns]
         print(table_format % tuple([f(v) for f, v in zip(formatter, r)]))
 
     if options.totals:
-        # totals
         t = []
         for c in columns:
             f = fields[c][3]
@@ -995,6 +1005,13 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     show_group.add_argument("-t", "--totals", action="store_true", help="Show totals")
+
+    show_group.add_argument(
+        "-o", "--output",
+        default="table",
+        choices=["table", "json", "csv"],
+        help="Output format (default: table)",
+    )
 
     sort_group = argparser.add_argument_group("Sort")
     sort_group.add_argument("-n", "--numeric", action="store_true", help="Numeric sort")
