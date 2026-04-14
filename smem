@@ -565,11 +565,22 @@ def _group_by_chromium_role(pt, cmdlines):
     return groups
 
 
+def _mem_thresholds():
+    """Return (min_pss_kb, min_rss_kb) from options, 0 if not set."""
+    pss = fromunits(options.min_pss) // 1024 if options.min_pss else 0
+    rss = fromunits(options.min_rss) // 1024 if options.min_rss else 0
+    return pss, rss
+
+
 def showchromium(pidmaps_f=pidmaps) -> None:
     p = proc.pids()
     pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
     cmdlines = {pid: proc.pidcmd(pid) for pid in pt}
     groups = _group_by_chromium_role(pt, cmdlines)
+    pss_min, rss_min = _mem_thresholds()
+    if pss_min or rss_min:
+        groups = {k: g for k, g in groups.items()
+                  if g['pss'] >= pss_min and g['rss'] >= rss_min}
 
     fields = dict(
         role=(
@@ -592,6 +603,10 @@ def showchromium(pidmaps_f=pidmaps) -> None:
 def showpids(pidmaps_f=pidmaps) -> None:
     p = proc.pids()
     pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
+    pss_min, rss_min = _mem_thresholds()
+    if pss_min or rss_min:
+        pt = {k: v for k, v in pt.items()
+              if v['pss'] >= pss_min and v['rss'] >= rss_min}
 
     def showuser(p):
         if options.numeric:
@@ -653,6 +668,10 @@ def showpids(pidmaps_f=pidmaps) -> None:
 def showmaps(is_aggregate=False) -> None:
     p = proc.pids()
     pt = maptotals(p, proc.allowed_cpu_count(), is_aggregate)
+    pss_min, rss_min = _mem_thresholds()
+    if pss_min or rss_min:
+        pt = {k: v for k, v in pt.items()
+              if v['pss'] >= pss_min and v['rss'] >= rss_min}
 
     fields = dict(
         map=(
@@ -751,6 +770,10 @@ def showusers(pidmaps_f=pidmaps) -> None:
 
     p = proc.pids()
     pt = usertotals(p, proc.allowed_cpu_count(), pidmaps_f=pidmaps_f)
+    pss_min, rss_min = _mem_thresholds()
+    if pss_min or rss_min:
+        pt = {k: v for k, v in pt.items()
+              if v['pss'] >= pss_min and v['rss'] >= rss_min}
 
     def showuser(u):
         if options.numeric:
@@ -1088,6 +1111,12 @@ def showdiff():
             ))
         default_columns = 'status pid command pss_a pss_b delta_pss'
 
+    pss_min, rss_min = _mem_thresholds()
+    if (pss_min or rss_min) and not options.system:
+        rows = [r for r in rows
+                if max(r.get('pss_a', 0), r.get('pss_b', 0)) >= pss_min
+                and max(r.get('rss_a', 0), r.get('rss_b', 0)) >= rss_min]
+
     sort_key = options.sort or 'delta_pss' if not options.system else 'area'
     if sort_key in ('delta_pss', 'delta_uss', 'delta_rss', 'delta_swap',
                     'delta_used', 'delta_cache', 'delta_noncache'):
@@ -1335,6 +1364,16 @@ def parse_arguments(argv=None) -> argparse.Namespace:
 
     filter_group.add_argument(
         "-U", "--userfilter", default=None, type=str, help="Process users regex"
+    )
+
+    filter_group.add_argument(
+        "--min-pss", default=None, type=str,
+        help="Exclude entries with PSS below threshold (e.g. 1M, 500K)",
+    )
+
+    filter_group.add_argument(
+        "--min-rss", default=None, type=str,
+        help="Exclude entries with RSS below threshold (e.g. 1M, 500K)",
     )
 
     show_group = argparser.add_argument_group("Show")
