@@ -1118,6 +1118,25 @@ def showseries():
     # Text table
     mt = totalmem()
 
+    if options.output == 'html':
+        all_col_hdrs = (['Role' if options.chromium else ('Map' if (options.mappings or options.aggregates) else 'Command')]
+                        + col_headers + ['\u0394PSS'])
+        display_rows, raw_rows = [], []
+        for r in rows:
+            d_row = [r['name']]
+            rv_row = [r['name']]
+            for ck in col_keys:
+                d_row.append(str(showamount(r[ck], mt)))
+                rv_row.append(r[ck])
+            d_row.append(showdelta(r['delta_pss'], mt))
+            rv_row.append(r['delta_pss'])
+            display_rows.append(d_row)
+            raw_rows.append(rv_row)
+        # Bar on last time column (index = len(col_keys), 0-indexed after name col)
+        bar_col = len(col_keys) if col_keys else None
+        _emit_html('smem series', all_col_hdrs, display_rows, raw_rows, bar_col)
+        return
+
     if options.chromium:
         name_hdr = 'Role'
         name_default = options.role_width if options.role_width > 0 else 44
@@ -1279,19 +1298,6 @@ def showdiff():
 
     columns = (options.columns or default_columns).split()
 
-    if options.output == 'json':
-        print(json.dumps(rows, indent=2))
-        return
-
-    if options.output == 'csv':
-        writer = csv.writer(sys.stdout)
-        if not options.no_header:
-            writer.writerow(columns)
-        for row in rows:
-            writer.writerow([row[c] for c in columns])
-        return
-
-    # Table output
     mt = totalmem()
     st = MemData()("swaptotal")
 
@@ -1305,14 +1311,52 @@ def showdiff():
     HEADERS = {
         'status': '', 'pid': 'PID', 'command': 'Command', 'map': 'Map', 'area': 'Area',
         'role': 'Role', 'count_a': 'CNT_A', 'count_b': 'CNT_B',
-        'pss_a': 'PSS_A', 'pss_b': 'PSS_B', 'delta_pss': 'ΔPSS',
-        'uss_a': 'USS_A', 'uss_b': 'USS_B', 'delta_uss': 'ΔUSS',
-        'rss_a': 'RSS_A', 'rss_b': 'RSS_B', 'delta_rss': 'ΔRSS',
-        'swap_a': 'SWAP_A', 'swap_b': 'SWAP_B', 'delta_swap': 'ΔSWAP',
-        'used_a': 'USED_A', 'used_b': 'USED_B', 'delta_used': 'ΔUSED',
-        'cache_a': 'CACHE_A', 'cache_b': 'CACHE_B', 'delta_cache': 'ΔCACHE',
-        'noncache_a': 'NCACHE_A', 'noncache_b': 'NCACHE_B', 'delta_noncache': 'ΔNCACHE',
+        'pss_a': 'PSS_A', 'pss_b': 'PSS_B', 'delta_pss': '\u0394PSS',
+        'uss_a': 'USS_A', 'uss_b': 'USS_B', 'delta_uss': '\u0394USS',
+        'rss_a': 'RSS_A', 'rss_b': 'RSS_B', 'delta_rss': '\u0394RSS',
+        'swap_a': 'SWAP_A', 'swap_b': 'SWAP_B', 'delta_swap': '\u0394SWAP',
+        'used_a': 'USED_A', 'used_b': 'USED_B', 'delta_used': '\u0394USED',
+        'cache_a': 'CACHE_A', 'cache_b': 'CACHE_B', 'delta_cache': '\u0394CACHE',
+        'noncache_a': 'NCACHE_A', 'noncache_b': 'NCACHE_B', 'delta_noncache': '\u0394NCACHE',
     }
+
+    if options.output == 'json':
+        print(json.dumps(rows, indent=2))
+        return
+
+    if options.output == 'csv':
+        writer = csv.writer(sys.stdout)
+        if not options.no_header:
+            writer.writerow(columns)
+        for row in rows:
+            writer.writerow([row[c] for c in columns])
+        return
+
+    if options.output == 'html':
+        col_hdrs = [HEADERS.get(c, c) for c in columns]
+        display_rows, raw_rows = [], []
+        for row in rows:
+            d_row, r_row = [], []
+            for c in columns:
+                v = row[c]
+                r_row.append(v)
+                if c in MEM_COLS:
+                    d_row.append(str(showamount(v, mt)))
+                elif c in SWAP_COLS:
+                    d_row.append(str(showamount(v, st)))
+                elif c in DELTA_MEM:
+                    d_row.append(showdelta(v, mt))
+                elif c in DELTA_SWP:
+                    d_row.append(showdelta(v, st))
+                else:
+                    d_row.append(str(v))
+            display_rows.append(d_row)
+            raw_rows.append(r_row)
+        bar_col = next((i for i, c in enumerate(columns) if c == 'pss_b'), None)
+        _emit_html('smem diff', col_hdrs, display_rows, raw_rows, bar_col)
+        return
+
+    # Table output
 
     cmd_w  = options.cmd_width     if options.cmd_width     > 0 else 27
     map_w  = options.mapping_width if options.mapping_width > 0 else 40
@@ -1394,6 +1438,92 @@ def showdiff():
         print(fmt % tuple(fn(row[c]) for fn, c in zip(col_fn, columns)))
 
 
+_HTML_CSS = """\
+body{font-family:monospace;font-size:13px;margin:16px}
+h1{font-size:14px;font-weight:bold;margin-bottom:8px}
+table{border-collapse:collapse;width:max-content}
+th,td{padding:3px 10px;text-align:right;border-bottom:1px solid #ddd;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{background:#f0f0f0;cursor:pointer;user-select:none}
+th:hover{background:#e0e0e0}
+th.asc::after{content:" \u25b2";font-size:10px}
+th.desc::after{content:" \u25bc";font-size:10px}
+tr:hover td{background:rgba(0,0,0,0.03)}
+.bar-cell{position:relative;min-width:60px}
+.bar-bg{position:absolute;left:0;top:1px;bottom:1px;background:rgba(70,130,180,0.22);z-index:0;border-radius:2px}
+.bar-val{position:relative;z-index:1}
+"""
+
+_HTML_JS = """\
+(function(){
+var ths=document.querySelectorAll('th'),sortCol=-1,sortAsc=true;
+ths.forEach(function(th,i){
+  th.addEventListener('click',function(){
+    var tbody=th.closest('table').querySelector('tbody');
+    var rows=Array.from(tbody.querySelectorAll('tr'));
+    var asc=(sortCol===i)?!sortAsc:true;
+    sortCol=i;sortAsc=asc;
+    ths.forEach(function(t){t.className='';});
+    th.className=asc?'asc':'desc';
+    rows.sort(function(a,b){
+      var av=a.querySelectorAll('td')[i].dataset.val||'';
+      var bv=b.querySelectorAll('td')[i].dataset.val||'';
+      var an=parseFloat(av),bn=parseFloat(bv);
+      if(!isNaN(an)&&!isNaN(bn))return asc?an-bn:bn-an;
+      return asc?av.localeCompare(bv):bv.localeCompare(av);
+    });
+    rows.forEach(function(r){tbody.appendChild(r);});
+  });
+});
+})();
+"""
+
+
+def _html_escape(s):
+    return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+
+def _emit_html(title, col_headers, display_rows, raw_rows, bar_col=None):
+    """Emit a self-contained sortable HTML table to stdout."""
+    bar_max = None
+    if bar_col is not None and raw_rows:
+        try:
+            bar_max = max(float(r[bar_col]) for r in raw_rows
+                         if r[bar_col] not in ('', None))
+        except (ValueError, TypeError):
+            bar_max = None
+        if not bar_max or bar_max <= 0:
+            bar_col = None
+
+    lines = [
+        '<!DOCTYPE html><html><head><meta charset="utf-8">',
+        '<title>%s</title>' % _html_escape(title),
+        '<style>%s</style></head><body>' % _HTML_CSS,
+        '<h1>%s</h1><table><thead><tr>' % _html_escape(title),
+    ]
+    for h in col_headers:
+        lines.append('<th>%s</th>' % _html_escape(h))
+    lines.append('</tr></thead><tbody>')
+    for d_row, r_row in zip(display_rows, raw_rows):
+        lines.append('<tr>')
+        for j, (d, r) in enumerate(zip(d_row, r_row)):
+            dv = _html_escape(d)
+            rv = _html_escape(str(r))
+            if bar_col is not None and j == bar_col:
+                try:
+                    pct = min(100.0, 100.0 * float(r) / bar_max)
+                except (ValueError, TypeError):
+                    pct = 0.0
+                lines.append('<td class="bar-cell" data-val="%s">'
+                             '<div class="bar-bg" style="width:%.1f%%"></div>'
+                             '<span class="bar-val">%s</span></td>' % (rv, pct, dv))
+            else:
+                lines.append('<td data-val="%s">%s</td>' % (rv, dv))
+        lines.append('</tr>')
+    lines.append('</tbody></table><script>%s</script></body></html>' % _HTML_JS)
+    print('\n'.join(lines))
+
+
 def showtable(rows, fields, columns, sort) -> None:
     if sort not in fields:
         showfields(fields, sort)
@@ -1419,13 +1549,33 @@ def showtable(rows, fields, columns, sort) -> None:
             writer.writerow([fields[c][1](n) for c in columns])
         return
 
-    header = ""
-    table_format = ""
-    formatter = []
-
     mt = totalmem()
     memdata = MemData()
     st = memdata("swaptotal")
+
+    if options.output == 'html':
+        col_hdrs = [fields[c][0] for c in columns]
+        display_rows, raw_rows = [], []
+        for n in sorted_rows:
+            d_row, r_row = [], []
+            for c in columns:
+                raw = fields[c][1](n)
+                r_row.append(raw)
+                fmt = fields[c][2]
+                if 'a' in fmt:
+                    total = st if c == 'swap' else mt
+                    d_row.append(str(showamount(raw, total)))
+                else:
+                    d_row.append(str(raw))
+            display_rows.append(d_row)
+            raw_rows.append(r_row)
+        bar_col = next((i for i, c in enumerate(columns) if c in ('pss', 'used')), None)
+        _emit_html('smem', col_hdrs, display_rows, raw_rows, bar_col)
+        return
+
+    header = ""
+    table_format = ""
+    formatter = []
 
     if options.autosize:
         colsizes = autosize(columns, fields, rows)
@@ -1562,7 +1712,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     show_group.add_argument(
         "-o", "--output",
         default="table",
-        choices=["table", "json", "csv"],
+        choices=["table", "json", "csv", "html"],
         help="Output format (default: table)",
     )
 
