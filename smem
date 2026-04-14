@@ -1012,6 +1012,151 @@ def _collect_system_values(source):
     ]
 
 
+def _series_label(path):
+    """Derive a short column header from a tarfile path."""
+    name = os.path.basename(path)
+    name = re.sub(r'\.(tar\.gz|tar\.bz2|tar\.xz|tar|tgz|tbz2)$', '', name, flags=re.I)
+    m = re.search(r'(\d{4}[._-]\d{2}[._-]\d{2}[._T-]\d{2}[._-]\d{2}(?:[._-]\d{2})?)', name)
+    if m:
+        return m.group(1)
+    return name
+
+
+def _collect_series_snapshot(source):
+    """Return ({key: pss_kb}, {key: display_name}) for one capture."""
+    if options.chromium:
+        totals, cmdlines = _collect_proc_totals(source)
+        groups = _group_by_chromium_role(totals, cmdlines)
+        return {k: groups[k]['pss'] for k in groups}, {k: groups[k]['label'] for k in groups}
+    elif options.mappings or options.aggregates:
+        totals = _collect_map_totals(source, options.aggregates)
+        return {name: totals[name]['pss'] for name in totals}, {}
+    else:
+        totals, cmdlines = _collect_proc_totals(source)
+        pss = {}
+        for pid in totals:
+            cmd = cmdlines.get(pid, '?')
+            pss[cmd] = pss.get(cmd, 0) + totals[pid]['pss']
+        return pss, {}
+
+
+def showseries():
+    def _sort_key(p):
+        m = re.search(r'\d+', os.path.basename(p))
+        return int(m.group()) if m else float('inf')
+
+    sources = sorted(options.series, key=_sort_key)
+    # Use t0/t1/... as collision-safe internal keys; keep display labels separate
+    col_keys = ['t%d' % i for i in range(len(sources))]
+    raw_headers = [_series_label(src) for src in sources]
+    seen_h = {}
+    col_headers = []
+    for h in raw_headers:
+        if h in seen_h:
+            seen_h[h] += 1
+            col_headers.append('%s_%d' % (h, seen_h[h]))
+        else:
+            seen_h[h] = 0
+            col_headers.append(h)
+
+    snapshots    = []   # list of {key: pss_kb}
+    display_names = {}  # role/map key → display name
+    for src, col_key in zip(sources, col_keys):
+        pss, names = _collect_series_snapshot(src)
+        snapshots.append(pss)
+        display_names.update(names)
+
+    if not snapshots:
+        return
+
+    # Collect all row keys in first-seen order
+    all_keys = []
+    seen_keys = set()
+    for snap in snapshots:
+        for k in snap:
+            if k not in seen_keys:
+                all_keys.append(k)
+                seen_keys.add(k)
+
+    pss_min, _ = _mem_thresholds()
+    rows = []
+    for key in all_keys:
+        vals = [snap.get(key, 0) for snap in snapshots]
+        if pss_min and max(vals) < pss_min:
+            continue
+        delta = vals[-1] - vals[0] if len(vals) > 1 else 0
+        row = {'key': key, 'name': display_names.get(key, key), 'delta_pss': delta}
+        for ck, v in zip(col_keys, vals):
+            row[ck] = v
+        rows.append(row)
+
+    sort_key = options.sort or 'delta_pss'
+    if sort_key == 'delta_pss':
+        rows.sort(key=lambda r: abs(r['delta_pss']), reverse=not options.reverse)
+    else:
+        rows.sort(key=lambda r: r.get(sort_key, 0), reverse=bool(options.reverse))
+
+    if options.output == 'json':
+        out = []
+        for r in rows:
+            entry = {'name': r['name']}
+            for ck, ch in zip(col_keys, col_headers):
+                entry[ch] = r[ck]
+            entry['delta_pss'] = r['delta_pss']
+            out.append(entry)
+        print(json.dumps(out, indent=2))
+        return
+
+    if options.output == 'csv':
+        writer = csv.writer(sys.stdout)
+        if not options.no_header:
+            writer.writerow(['name'] + col_headers + ['delta_pss'])
+        for r in rows:
+            writer.writerow([r['name']] + [r[ck] for ck in col_keys] + [r['delta_pss']])
+        return
+
+    # Text table
+    mt = totalmem()
+
+    if options.chromium:
+        name_hdr = 'Role'
+        name_default = options.role_width if options.role_width > 0 else 44
+    elif options.mappings or options.aggregates:
+        name_hdr = 'Map'
+        name_default = options.mapping_width if options.mapping_width > 0 else 40
+    else:
+        name_hdr = 'Command'
+        name_default = options.cmd_width if options.cmd_width > 0 else 27
+
+    if options.autosize:
+        name_w = max([len(r['name']) for r in rows] + [len(name_hdr)], default=name_default)
+        other_w = len(col_keys) * 9 + 10  # 8 chars per value col + 9 for delta + separators
+        try:
+            _, tty_w = os.popen("stty size", "r").read().split()
+            tty_w = int(tty_w)
+        except Exception:
+            tty_w = 80
+        name_w = min(name_w, max(10, tty_w - other_w))
+    else:
+        name_w = name_default
+
+    name_fmt = '%%-%d.%ds' % (name_w, name_w)
+
+    if not options.no_header:
+        parts = [name_fmt % name_hdr]
+        for ch in col_headers:
+            parts.append('%8.8s' % ch)
+        parts.append('%9.9s' % 'DPSS')
+        print(' '.join(parts))
+
+    for r in rows:
+        parts = [name_fmt % r['name']]
+        for ck in col_keys:
+            parts.append('%8s' % showamount(r[ck], mt))
+        parts.append('%9s' % showdelta(r['delta_pss'], mt))
+        print(' '.join(parts))
+
+
 def showdiff():
     source_a, source_b = options.diff
 
@@ -1483,6 +1628,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     argparser.add_argument(
+        "--series", nargs='+', metavar="TAR",
+        help="Show PSS time-series across multiple captures (tarfiles)",
+    )
+
+    argparser.add_argument(
         "--pid",
         default=None,
         type=int,
@@ -1509,7 +1659,9 @@ def main() -> None:
     pidmaps_f = pidmaps_rollup if proc.use_smaps_rollup() else pidmaps
 
     try:
-        if options.diff:
+        if options.series:
+            showseries()
+        elif options.diff:
             showdiff()
         elif options.chromium:
             showchromium(pidmaps_f)
