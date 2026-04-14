@@ -542,19 +542,16 @@ def chromium_role(cmd, chromium_binaries):
     return None, None
 
 
-def showchromium(pidmaps_f=pidmaps) -> None:
-    p = proc.pids()
-    pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
-
+def _group_by_chromium_role(pt, cmdlines):
+    """Group process totals by Chromium role. Returns {group_key: {...}}."""
     chromium_binaries = {
-        proc.pidcmd(pid).split()[0]
+        cmdlines[pid].split()[0]
         for pid in pt
-        if re.search(r'--type=', proc.pidcmd(pid))
+        if re.search(r'--type=', cmdlines.get(pid, ''))
     }
-
     groups = {}
     for pid in pt:
-        label, key = chromium_role(proc.pidcmd(pid), chromium_binaries)
+        label, key = chromium_role(cmdlines.get(pid, ''), chromium_binaries)
         if key is None:
             continue
         if key not in groups:
@@ -565,6 +562,14 @@ def showchromium(pidmaps_f=pidmaps) -> None:
         g['rss']   += pt[pid]['rss']
         g['swap']  += pt[pid]['swap']
         g['count'] += 1
+    return groups
+
+
+def showchromium(pidmaps_f=pidmaps) -> None:
+    p = proc.pids()
+    pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
+    cmdlines = {pid: proc.pidcmd(pid) for pid in pt}
+    groups = _group_by_chromium_role(pt, cmdlines)
 
     fields = dict(
         role=(
@@ -1019,6 +1024,31 @@ def showdiff():
             ))
         default_columns = 'area used_a used_b delta_used'
 
+    elif options.chromium:
+        data_a, cmdlines_a = _collect_proc_totals(source_a)
+        data_b, cmdlines_b = _collect_proc_totals(source_b)
+        groups_a = _group_by_chromium_role(data_a, cmdlines_a)
+        groups_b = _group_by_chromium_role(data_b, cmdlines_b)
+        rows = []
+        for key in set(groups_a) | set(groups_b):
+            a = groups_a.get(key, {})
+            b = groups_b.get(key, {})
+            status = ' ' if key in groups_a and key in groups_b else ('+' if key in groups_b else '-')
+            rows.append(dict(
+                status=status,
+                role=b.get('label') or a.get('label', key),
+                count_a=a.get('count', 0), count_b=b.get('count', 0),
+                pss_a=a.get('pss', 0), pss_b=b.get('pss', 0),
+                delta_pss=b.get('pss', 0) - a.get('pss', 0),
+                uss_a=a.get('uss', 0), uss_b=b.get('uss', 0),
+                delta_uss=b.get('uss', 0) - a.get('uss', 0),
+                rss_a=a.get('rss', 0), rss_b=b.get('rss', 0),
+                delta_rss=b.get('rss', 0) - a.get('rss', 0),
+                swap_a=a.get('swap', 0), swap_b=b.get('swap', 0),
+                delta_swap=b.get('swap', 0) - a.get('swap', 0),
+            ))
+        default_columns = 'status role count_a count_b pss_a pss_b delta_pss'
+
     else:
         data_a, cmdlines_a = _collect_proc_totals(source_a)
         data_b, cmdlines_b = _collect_proc_totals(source_b)
@@ -1092,6 +1122,7 @@ def showdiff():
 
     HEADERS = {
         'status': '', 'pid': 'PID', 'command': 'Command', 'map': 'Map', 'area': 'Area',
+        'role': 'Role', 'count_a': 'CNT_A', 'count_b': 'CNT_B',
         'pss_a': 'PSS_A', 'pss_b': 'PSS_B', 'delta_pss': 'ΔPSS',
         'uss_a': 'USS_A', 'uss_b': 'USS_B', 'delta_uss': 'ΔUSS',
         'rss_a': 'RSS_A', 'rss_b': 'RSS_B', 'delta_rss': 'ΔRSS',
@@ -1119,6 +1150,11 @@ def showdiff():
             col_fn.append(lambda v: v)
         elif c == 'area':
             col_fmt.append('%-24s');  col_fn.append(lambda v: v)
+        elif c == 'role':
+            col_fmt.append('%%-%d.%ds' % (map_w, map_w))
+            col_fn.append(lambda v: v)
+        elif c in ('count_a', 'count_b'):
+            col_fmt.append('%5s');    col_fn.append(lambda v: v)
         elif c in MEM_COLS:
             col_fmt.append('%8s')
             col_fn.append(lambda v, t=mt: showamount(v, t))
