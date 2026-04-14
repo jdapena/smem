@@ -1137,6 +1137,27 @@ def showseries():
         _emit_html('smem series', all_col_hdrs, display_rows, raw_rows, bar_col)
         return
 
+    if options.output == 'markdown':
+        name_hdr = ('Role' if options.chromium
+                    else ('Map' if (options.mappings or options.aggregates) else 'Command'))
+        if options.chromium:
+            name_w = options.role_width if options.role_width > 0 else 44
+        elif options.mappings or options.aggregates:
+            name_w = options.mapping_width if options.mapping_width > 0 else 40
+        else:
+            name_w = options.cmd_width if options.cmd_width > 0 else 27
+        all_col_hdrs = [name_hdr] + col_headers + ['\u0394PSS']
+        display_rows = []
+        for r in rows:
+            d_row = [r['name'][:name_w]]
+            for ck in col_keys:
+                d_row.append(str(showamount(r[ck], mt)))
+            d_row.append(showdelta(r['delta_pss'], mt))
+            display_rows.append(d_row)
+        alignments = ['l'] + ['r'] * (len(col_keys) + 1)
+        _emit_markdown(all_col_hdrs, display_rows, alignments)
+        return
+
     if options.chromium:
         name_hdr = 'Role'
         name_default = options.role_width if options.role_width > 0 else 44
@@ -1356,6 +1377,38 @@ def showdiff():
         _emit_html('smem diff', col_hdrs, display_rows, raw_rows, bar_col)
         return
 
+    if options.output == 'markdown':
+        col_hdrs = [HEADERS.get(c, c) for c in columns]
+        TEXT_COLS = {'status', 'command', 'map', 'area', 'role', 'pid', 'count_a', 'count_b'}
+        cmd_w  = options.cmd_width     if options.cmd_width     > 0 else 27
+        map_w  = options.mapping_width if options.mapping_width > 0 else 40
+        role_w = options.role_width    if options.role_width    > 0 else 44
+        display_rows = []
+        for row in rows:
+            d_row = []
+            for c in columns:
+                v = row[c]
+                if c in MEM_COLS:
+                    d_row.append(str(showamount(v, mt)))
+                elif c in SWAP_COLS:
+                    d_row.append(str(showamount(v, st)))
+                elif c in DELTA_MEM:
+                    d_row.append(showdelta(v, mt))
+                elif c in DELTA_SWP:
+                    d_row.append(showdelta(v, st))
+                elif c == 'command':
+                    d_row.append(str(v)[:cmd_w])
+                elif c == 'map':
+                    d_row.append(str(v)[:map_w])
+                elif c == 'role':
+                    d_row.append(str(v)[:role_w])
+                else:
+                    d_row.append(str(v))
+            display_rows.append(d_row)
+        alignments = ['l' if c in TEXT_COLS else 'r' for c in columns]
+        _emit_markdown(col_hdrs, display_rows, alignments)
+        return
+
     # Table output
 
     cmd_w  = options.cmd_width     if options.cmd_width     > 0 else 27
@@ -1524,6 +1577,28 @@ def _emit_html(title, col_headers, display_rows, raw_rows, bar_col=None):
     print('\n'.join(lines))
 
 
+def _emit_markdown(col_headers, display_rows, alignments):
+    """Emit a GFM-compatible markdown table to stdout."""
+    widths = [max(len(str(col_headers[i])),
+                  max((len(str(r[i])) for r in display_rows), default=0),
+                  3)
+              for i in range(len(col_headers))]
+
+    def fmt_row(cells):
+        parts = []
+        for cell, w, align in zip(cells, widths, alignments):
+            s = str(cell)
+            parts.append(s.ljust(w) if align == 'l' else s.rjust(w))
+        return '| ' + ' | '.join(parts) + ' |'
+
+    print(fmt_row(col_headers))
+    seps = [(':' + '-' * (w - 1) if a == 'l' else '-' * (w - 1) + ':')
+            for w, a in zip(widths, alignments)]
+    print('| ' + ' | '.join(seps) + ' |')
+    for row in display_rows:
+        print(fmt_row(row))
+
+
 def showtable(rows, fields, columns, sort) -> None:
     if sort not in fields:
         showfields(fields, sort)
@@ -1571,6 +1646,30 @@ def showtable(rows, fields, columns, sort) -> None:
             raw_rows.append(r_row)
         bar_col = next((i for i, c in enumerate(columns) if c in ('pss', 'used')), None)
         _emit_html('smem', col_hdrs, display_rows, raw_rows, bar_col)
+        return
+
+    if options.output == 'markdown':
+        col_hdrs = [fields[c][0] for c in columns]
+        display_rows = []
+        for n in sorted_rows:
+            d_row = []
+            for c in columns:
+                raw = fields[c][1](n)
+                fmt = fields[c][2]
+                if 'a' in fmt:
+                    total = st if c == 'swap' else mt
+                    d_row.append(str(showamount(raw, total)))
+                else:
+                    # Apply the format string so text columns are truncated
+                    # at their configured width; strip padding since markdown
+                    # handles alignment via the separator row.
+                    try:
+                        d_row.append((fmt % raw).strip())
+                    except (TypeError, ValueError):
+                        d_row.append(str(raw))
+            display_rows.append(d_row)
+        alignments = ['l' if fields[c][2].startswith('%-') else 'r' for c in columns]
+        _emit_markdown(col_hdrs, display_rows, alignments)
         return
 
     header = ""
@@ -1712,7 +1811,7 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     show_group.add_argument(
         "-o", "--output",
         default="table",
-        choices=["table", "json", "csv", "html"],
+        choices=["table", "json", "csv", "html", "markdown"],
         help="Output format (default: table)",
     )
 
