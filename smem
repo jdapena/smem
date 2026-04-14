@@ -856,6 +856,223 @@ def autosize(columns: Sized, fields, rows):
     return colsizes
 
 
+def showdelta(a, total):
+    """Format a signed memory delta for display."""
+    if a == 0:
+        return '0'
+    if options.abbreviate:
+        return ('+' if a > 0 else '-') + units(abs(a) * 1024)
+    elif options.percent:
+        return 'N/A' if total == 0 else '%+.2f%%' % (100.0 * a / total)
+    return '%+d' % a
+
+
+def _collect_proc_totals(source):
+    global proc, options
+    options.source = source
+    proc = ProcessData()
+    pidmaps_f = pidmaps_rollup if proc.use_smaps_rollup() else pidmaps
+    pids = proc.pids()
+    totals = processtotals(pids, proc.allowed_cpu_count(), pidmaps_f)
+    cmdlines = {pid: proc.pidcmd(pid) for pid in totals}
+    return totals, cmdlines
+
+
+def _collect_map_totals(source, is_aggregate=False):
+    global proc, options
+    options.source = source
+    proc = ProcessData()
+    pids = proc.pids()
+    return maptotals(pids, proc.allowed_cpu_count(), is_aggregate)
+
+
+def _collect_system_values(source):
+    global proc, options
+    options.source = source
+    proc = ProcessData()
+    m = MemData()
+    t = totalmem()
+    ki = kernelsize()
+    mt = m("memtotal")
+    f = m("memfree")
+    fh = max(t - mt - ki, 0)
+    u = m("anonpages") + m("mapped")
+    kd = mt - f - u
+    kdc = m("buffers") + m("sreclaimable") + (m("cached") - m("mapped"))
+    return [
+        ("firmware/hardware", fh, 0),
+        ("kernel image", ki, 0),
+        ("kernel dynamic memory", kd, kdc),
+        ("userspace memory", u, m("mapped")),
+        ("free memory", f, f),
+    ]
+
+
+def showdiff():
+    source_a, source_b = options.diff
+
+    if options.mappings or options.aggregates:
+        data_a = _collect_map_totals(source_a, options.aggregates)
+        data_b = _collect_map_totals(source_b, options.aggregates)
+        all_keys = set(data_a) | set(data_b)
+        rows = []
+        for name in all_keys:
+            a = data_a.get(name, {})
+            b = data_b.get(name, {})
+            uss_a = a.get('private_clean', 0) + a.get('private_dirty', 0)
+            uss_b = b.get('private_clean', 0) + b.get('private_dirty', 0)
+            status = ' ' if name in data_a and name in data_b else ('+' if name in data_b else '-')
+            rows.append(dict(
+                status=status, map=name,
+                pss_a=a.get('pss', 0), pss_b=b.get('pss', 0),
+                delta_pss=b.get('pss', 0) - a.get('pss', 0),
+                uss_a=uss_a, uss_b=uss_b, delta_uss=uss_b - uss_a,
+                rss_a=a.get('rss', 0), rss_b=b.get('rss', 0),
+                delta_rss=b.get('rss', 0) - a.get('rss', 0),
+                swap_a=a.get('swap', 0), swap_b=b.get('swap', 0),
+                delta_swap=b.get('swap', 0) - a.get('swap', 0),
+            ))
+        default_columns = 'status map pss_a pss_b delta_pss'
+
+    elif options.system:
+        sys_a = {area: (used, cache) for area, used, cache in _collect_system_values(source_a)}
+        sys_b = {area: (used, cache) for area, used, cache in _collect_system_values(source_b)}
+        order = [area for area, _, _ in _collect_system_values(source_a)]
+        rows = []
+        for area in order:
+            a_used, a_cache = sys_a[area]
+            b_used, b_cache = sys_b.get(area, (0, 0))
+            rows.append(dict(
+                area=area,
+                used_a=a_used, used_b=b_used, delta_used=b_used - a_used,
+                cache_a=a_cache, cache_b=b_cache, delta_cache=b_cache - a_cache,
+                noncache_a=a_used - a_cache, noncache_b=b_used - b_cache,
+                delta_noncache=(b_used - b_cache) - (a_used - a_cache),
+            ))
+        default_columns = 'area used_a used_b delta_used'
+
+    else:
+        data_a, cmdlines_a = _collect_proc_totals(source_a)
+        data_b, cmdlines_b = _collect_proc_totals(source_b)
+        rows = []
+        for pid in set(data_a) | set(data_b):
+            cmd_a = cmdlines_a.get(pid, '')
+            cmd_b = cmdlines_b.get(pid, '')
+            in_a, in_b = pid in data_a, pid in data_b
+            if in_a and in_b and cmd_a != cmd_b:
+                # PID reused by a different process between captures
+                a = data_a[pid]
+                rows.append(dict(status='-', pid=pid, command=cmd_a,
+                                 pss_a=a['pss'], pss_b=0, delta_pss=-a['pss'],
+                                 uss_a=a['uss'], uss_b=0, delta_uss=-a['uss'],
+                                 rss_a=a['rss'], rss_b=0, delta_rss=-a['rss'],
+                                 swap_a=a['swap'], swap_b=0, delta_swap=-a['swap']))
+                b = data_b[pid]
+                rows.append(dict(status='+', pid=pid, command=cmd_b,
+                                 pss_a=0, pss_b=b['pss'], delta_pss=b['pss'],
+                                 uss_a=0, uss_b=b['uss'], delta_uss=b['uss'],
+                                 rss_a=0, rss_b=b['rss'], delta_rss=b['rss'],
+                                 swap_a=0, swap_b=b['swap'], delta_swap=b['swap']))
+                continue
+            a = data_a.get(pid, {})
+            b = data_b.get(pid, {})
+            status = ' ' if in_a and in_b else ('+' if in_b else '-')
+            rows.append(dict(
+                status=status, pid=pid, command=cmd_b if in_b else cmd_a,
+                pss_a=a.get('pss', 0), pss_b=b.get('pss', 0),
+                delta_pss=b.get('pss', 0) - a.get('pss', 0),
+                uss_a=a.get('uss', 0), uss_b=b.get('uss', 0),
+                delta_uss=b.get('uss', 0) - a.get('uss', 0),
+                rss_a=a.get('rss', 0), rss_b=b.get('rss', 0),
+                delta_rss=b.get('rss', 0) - a.get('rss', 0),
+                swap_a=a.get('swap', 0), swap_b=b.get('swap', 0),
+                delta_swap=b.get('swap', 0) - a.get('swap', 0),
+            ))
+        default_columns = 'status pid command pss_a pss_b delta_pss'
+
+    sort_key = options.sort or 'delta_pss' if not options.system else 'area'
+    if sort_key in ('delta_pss', 'delta_uss', 'delta_rss', 'delta_swap',
+                    'delta_used', 'delta_cache', 'delta_noncache'):
+        rows.sort(key=lambda r: abs(r[sort_key]), reverse=not options.reverse)
+    else:
+        rows.sort(key=lambda r: r.get(sort_key, 0), reverse=bool(options.reverse))
+
+    columns = (options.columns or default_columns).split()
+
+    if options.output == 'json':
+        print(json.dumps(rows, indent=2))
+        return
+
+    if options.output == 'csv':
+        writer = csv.writer(sys.stdout)
+        if not options.no_header:
+            writer.writerow(columns)
+        for row in rows:
+            writer.writerow([row[c] for c in columns])
+        return
+
+    # Table output
+    mt = totalmem()
+    st = MemData()("swaptotal")
+
+    MEM_COLS  = {'pss_a', 'pss_b', 'uss_a', 'uss_b', 'rss_a', 'rss_b',
+                 'used_a', 'used_b', 'cache_a', 'cache_b', 'noncache_a', 'noncache_b'}
+    SWAP_COLS = {'swap_a', 'swap_b'}
+    DELTA_MEM = {'delta_pss', 'delta_uss', 'delta_rss',
+                 'delta_used', 'delta_cache', 'delta_noncache'}
+    DELTA_SWP = {'delta_swap'}
+
+    HEADERS = {
+        'status': '', 'pid': 'PID', 'command': 'Command', 'map': 'Map', 'area': 'Area',
+        'pss_a': 'PSS_A', 'pss_b': 'PSS_B', 'delta_pss': 'ΔPSS',
+        'uss_a': 'USS_A', 'uss_b': 'USS_B', 'delta_uss': 'ΔUSS',
+        'rss_a': 'RSS_A', 'rss_b': 'RSS_B', 'delta_rss': 'ΔRSS',
+        'swap_a': 'SWAP_A', 'swap_b': 'SWAP_B', 'delta_swap': 'ΔSWAP',
+        'used_a': 'USED_A', 'used_b': 'USED_B', 'delta_used': 'ΔUSED',
+        'cache_a': 'CACHE_A', 'cache_b': 'CACHE_B', 'delta_cache': 'ΔCACHE',
+        'noncache_a': 'NCACHE_A', 'noncache_b': 'NCACHE_B', 'delta_noncache': 'ΔNCACHE',
+    }
+
+    cmd_w = options.cmd_width if options.cmd_width > 0 else 27
+    map_w = options.mapping_width if options.mapping_width > 0 else 40
+
+    col_fmt = []
+    col_fn  = []
+    for c in columns:
+        if c == 'status':
+            col_fmt.append('%-1s');  col_fn.append(lambda v: v)
+        elif c == 'pid':
+            col_fmt.append('%6s');   col_fn.append(lambda v: v)
+        elif c == 'command':
+            col_fmt.append('%%-%d.%ds' % (cmd_w, cmd_w))
+            col_fn.append(lambda v: v)
+        elif c == 'map':
+            col_fmt.append('%%-%d.%ds' % (map_w, map_w))
+            col_fn.append(lambda v: v)
+        elif c == 'area':
+            col_fmt.append('%-24s');  col_fn.append(lambda v: v)
+        elif c in MEM_COLS:
+            col_fmt.append('%8s')
+            col_fn.append(lambda v, t=mt: showamount(v, t))
+        elif c in SWAP_COLS:
+            col_fmt.append('%8s')
+            col_fn.append(lambda v, t=st: showamount(v, t))
+        elif c in DELTA_MEM:
+            col_fmt.append('%9s')
+            col_fn.append(lambda v, t=mt: showdelta(v, t))
+        elif c in DELTA_SWP:
+            col_fmt.append('%9s')
+            col_fn.append(lambda v, t=st: showdelta(v, t))
+        else:
+            col_fmt.append('%8s');   col_fn.append(lambda v: v)
+
+    fmt = ' '.join(col_fmt)
+    if not options.no_header:
+        print(fmt % tuple(HEADERS.get(c, c) for c in columns))
+    for row in rows:
+        print(fmt % tuple(fn(row[c]) for fn, c in zip(col_fn, columns)))
+
+
 def showtable(rows, fields, columns, sort) -> None:
     if sort not in fields:
         showfields(fields, sort)
@@ -1063,6 +1280,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     argparser.add_argument(
+        "--diff", nargs=2, metavar=("OLD", "NEW"),
+        help="Compare two captures (tarfiles)",
+    )
+
+    argparser.add_argument(
         "--pid",
         default=None,
         type=int,
@@ -1089,7 +1311,9 @@ def main() -> None:
     pidmaps_f = pidmaps_rollup if proc.use_smaps_rollup() else pidmaps
 
     try:
-        if options.mappings:
+        if options.diff:
+            showdiff()
+        elif options.mappings:
             showmaps()
         elif options.aggregates:
             showmaps(True)
