@@ -516,6 +516,74 @@ def widthstr(field, width, default) -> str:
     return "%-{size}.{size}s".format(size=size)
 
 
+def chromium_role(cmd, chromium_binaries):
+    """Return (role_label, group_key) for a Chromium process, or (None, None)."""
+    if not cmd:
+        return None, None
+    binary = cmd.split()[0]
+    name = os.path.basename(binary)
+    m = re.search(r'--type=(\S+)', cmd)
+    if m:
+        type_val = m.group(1)
+        if type_val == 'renderer':
+            am = re.search(r'--app-id=(\S+)', cmd)
+            detail = am.group(1) if am else ''
+            label = ('%s [renderer] %s' % (name, detail)).rstrip()
+            return label, '%s\x00renderer\x00%s' % (name, detail)
+        if type_val == 'utility':
+            sm = re.search(r'--utility-sub-type=(\S+)', cmd)
+            detail = sm.group(1) if sm else ''
+            label = ('%s [utility] %s' % (name, detail)).rstrip()
+            return label, '%s\x00utility\x00%s' % (name, detail)
+        label = '%s [%s]' % (name, type_val)
+        return label, '%s\x00%s' % (name, type_val)
+    if binary in chromium_binaries:
+        return '%s [browser]' % name, '%s\x00browser' % name
+    return None, None
+
+
+def showchromium(pidmaps_f=pidmaps) -> None:
+    p = proc.pids()
+    pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
+
+    chromium_binaries = {
+        proc.pidcmd(pid).split()[0]
+        for pid in pt
+        if re.search(r'--type=', proc.pidcmd(pid))
+    }
+
+    groups = {}
+    for pid in pt:
+        label, key = chromium_role(proc.pidcmd(pid), chromium_binaries)
+        if key is None:
+            continue
+        if key not in groups:
+            groups[key] = dict(label=label, pss=0, uss=0, rss=0, swap=0, count=0)
+        g = groups[key]
+        g['pss']   += pt[pid]['pss']
+        g['uss']   += pt[pid]['uss']
+        g['rss']   += pt[pid]['rss']
+        g['swap']  += pt[pid]['swap']
+        g['count'] += 1
+
+    fields = dict(
+        role=(
+            "Role",
+            lambda k: groups[k]['label'],
+            widthstr("role", options.mapping_width, 44),
+            None,
+            "Chromium process role",
+        ),
+        count=("Count", lambda k: groups[k]['count'], "% 5s", sum, "number of processes"),
+        swap=("Swap",  lambda k: groups[k]['swap'],  "% 8a", sum, "swap consumed"),
+        uss=("USS",   lambda k: groups[k]['uss'],   "% 8a", sum, "unique set size"),
+        rss=("RSS",   lambda k: groups[k]['rss'],   "% 8a", sum, "resident set size"),
+        pss=("PSS",   lambda k: groups[k]['pss'],   "% 8a", sum, "proportional set size"),
+    )
+    columns = options.columns or "role count pss uss rss"
+    showtable(list(groups.keys()), fields, columns.split(), options.sort or "pss")
+
+
 def showpids(pidmaps_f=pidmaps) -> None:
     p = proc.pids()
     pt = processtotals(p, proc.allowed_cpu_count(), pidmaps_f)
@@ -1204,6 +1272,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     show_group.add_argument(
+        "-C", "--chromium", action="store_true",
+        help="Show Chromium process roles (browser, renderer, gpu-process, etc.)",
+    )
+
+    show_group.add_argument(
         "-m", "--mappings", action="store_true", help="Show mappings"
     )
 
@@ -1313,6 +1386,8 @@ def main() -> None:
     try:
         if options.diff:
             showdiff()
+        elif options.chromium:
+            showchromium(pidmaps_f)
         elif options.mappings:
             showmaps()
         elif options.aggregates:
