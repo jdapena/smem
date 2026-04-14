@@ -102,16 +102,21 @@ class TarfileReader(ProcReader):
     def listpids(self) -> List[str]:
         for tarinfo in self._tar:
             if tarinfo.name.endswith('/smaps'):
-                d,f = tarinfo.name.split('/')
-                yield d
+                yield tarinfo.name.split('/')[-2]
 
     def piduser(self, pid):
-        tarinfo = self._tar.getmember("%d" % pid)
-        return tarinfo.uid if tarinfo else -1
+        try:
+            return self._tar.getmember("%d" % pid).uid
+        except KeyError:
+            return -1
 
     def read(self, filename) -> str:
         """Return the file as a string"""
-        return TextIOWrapper(self._tar.extractfile(filename)).read()
+        try:
+            f = self._tar.extractfile(filename)
+            return TextIOWrapper(f).read() if f is not None else ''
+        except KeyError:
+            return ''
 
 class Proc(object):
     """Helper class to handle /proc/ filesystem data"""
