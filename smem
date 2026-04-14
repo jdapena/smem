@@ -575,7 +575,7 @@ def showchromium(pidmaps_f=pidmaps) -> None:
         role=(
             "Role",
             lambda k: groups[k]['label'],
-            widthstr("role", options.mapping_width, 44),
+            widthstr("role", options.role_width, 44),
             None,
             "Chromium process role",
         ),
@@ -1132,8 +1132,9 @@ def showdiff():
         'noncache_a': 'NCACHE_A', 'noncache_b': 'NCACHE_B', 'delta_noncache': 'ΔNCACHE',
     }
 
-    cmd_w = options.cmd_width if options.cmd_width > 0 else 27
-    map_w = options.mapping_width if options.mapping_width > 0 else 40
+    cmd_w  = options.cmd_width     if options.cmd_width     > 0 else 27
+    map_w  = options.mapping_width if options.mapping_width > 0 else 40
+    role_w = options.role_width    if options.role_width    > 0 else 44
 
     # Autosize variable-width text columns
     TEXT_OVERFLOW = ('command', 'map', 'role')
@@ -1142,7 +1143,7 @@ def showdiff():
     for c in columns:
         if c not in TEXT_OVERFLOW:
             continue
-        default = cmd_w if c == 'command' else map_w
+        default = cmd_w if c == 'command' else (role_w if c == 'role' else map_w)
         if options.autosize:
             sizes = [len(HEADERS.get(c, c))]
             for row in rows:
@@ -1184,7 +1185,7 @@ def showdiff():
         elif c == 'area':
             col_fmt.append('%-24s');  col_fn.append(lambda v: v)
         elif c == 'role':
-            w = text_w.get(c, map_w)
+            w = text_w.get(c, role_w)
             col_fmt.append('%%-%d.%ds' % (w, w))
             col_fn.append(lambda v: v)
         elif c in ('count_a', 'count_b'):
@@ -1409,6 +1410,13 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         default=-1,
         type=int,
         help="Text width for mapping names (0=as needed)",
+    )
+
+    width_group.add_argument(
+        "--role-width",
+        default=-1,
+        type=int,
+        help="Text width for Chromium role names (0=as needed)",
     )
 
     width_group.add_argument(
