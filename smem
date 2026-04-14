@@ -1135,6 +1135,37 @@ def showdiff():
     cmd_w = options.cmd_width if options.cmd_width > 0 else 27
     map_w = options.mapping_width if options.mapping_width > 0 else 40
 
+    # Autosize variable-width text columns
+    TEXT_OVERFLOW = ('command', 'map', 'role')
+    FIXED_W = {'status': 1, 'pid': 6, 'count_a': 5, 'count_b': 5, 'area': 24}
+    text_w = {}
+    for c in columns:
+        if c not in TEXT_OVERFLOW:
+            continue
+        default = cmd_w if c == 'command' else map_w
+        if options.autosize:
+            sizes = [len(HEADERS.get(c, c))]
+            for row in rows:
+                sizes.append(len(str(row.get(c, ''))))
+            text_w[c] = max(sizes)
+        else:
+            text_w[c] = default
+    if options.autosize:
+        overflow_cols = [c for c in columns if c in TEXT_OVERFLOW]
+        if overflow_cols:
+            oc = overflow_cols[0]
+            other_w = sum(
+                FIXED_W.get(c, 9 if c in DELTA_MEM | DELTA_SWP else 8)
+                for c in columns if c != oc and c not in TEXT_OVERFLOW
+            ) + sum(text_w[c] for c in columns if c in TEXT_OVERFLOW and c != oc)
+            other_w += len(columns) - 1
+            try:
+                _, tty_w = os.popen("stty size", "r").read().split()
+                tty_w = int(tty_w)
+            except Exception:
+                tty_w = 80
+            text_w[oc] = min(text_w[oc], max(10, tty_w - other_w))
+
     col_fmt = []
     col_fn  = []
     for c in columns:
@@ -1143,15 +1174,18 @@ def showdiff():
         elif c == 'pid':
             col_fmt.append('%6s');   col_fn.append(lambda v: v)
         elif c == 'command':
-            col_fmt.append('%%-%d.%ds' % (cmd_w, cmd_w))
+            w = text_w.get(c, cmd_w)
+            col_fmt.append('%%-%d.%ds' % (w, w))
             col_fn.append(lambda v: v)
         elif c == 'map':
-            col_fmt.append('%%-%d.%ds' % (map_w, map_w))
+            w = text_w.get(c, map_w)
+            col_fmt.append('%%-%d.%ds' % (w, w))
             col_fn.append(lambda v: v)
         elif c == 'area':
             col_fmt.append('%-24s');  col_fn.append(lambda v: v)
         elif c == 'role':
-            col_fmt.append('%%-%d.%ds' % (map_w, map_w))
+            w = text_w.get(c, map_w)
+            col_fmt.append('%%-%d.%ds' % (w, w))
             col_fn.append(lambda v: v)
         elif c in ('count_a', 'count_b'):
             col_fmt.append('%5s');    col_fn.append(lambda v: v)
