@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smem"
+version = "2.0.0"
+description = "Tool for meaningful memory reporting"
+readme = "readme.md"
+license = {text = "GPL-2.0-or-later"}
+requires-python = ">=3.6"
+dependencies = []
+
+[project.scripts]
+smem = "smem_lib.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["smem_lib*"]

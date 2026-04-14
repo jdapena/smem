@@ -1,3 +1,3 @@
-#!/usr/bin/env python3
 from smem_lib.cli import main
+
 main()
