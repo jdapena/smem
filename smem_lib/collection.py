@@ -152,8 +152,10 @@ def maptotals(pids, allowed_cpu_count, is_aggregate=False):
 
 def pidmaps_rollup(pid) -> Dict[int, Dict[str, int]]:
     try:
-        smaps_rollup_lines = open("/proc/%s/smaps_rollup" % pid).read().splitlines(True)
+        smaps_rollup_lines = _g.proc.readlines("%s/smaps_rollup" % pid)
     except:
+        return {}
+    if not smaps_rollup_lines:
         return {}
     header = smaps_rollup_lines[0]
     stats = smaps_rollup_lines[1:]
