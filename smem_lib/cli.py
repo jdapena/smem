@@ -65,6 +65,10 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     filter_group.add_argument(
+        "-G", "--cgroupfilter", default=None, type=str, help="Process cgroup path regex"
+    )
+
+    filter_group.add_argument(
         "--min-pss", default=None, type=str,
         help="Exclude entries with PSS below threshold (e.g. 1M, 500K)",
     )
@@ -161,6 +165,13 @@ def parse_arguments(argv=None) -> argparse.Namespace:
         default=-1,
         type=int,
         help="Text width for PIDS list names (0=as needed)",
+    )
+
+    width_group.add_argument(
+        "--cgroup-width",
+        default=-1,
+        type=int,
+        help="Text width for cgroup path column (0=as needed)",
     )
 
     argparser.add_argument(
