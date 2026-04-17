@@ -83,6 +83,21 @@ smem --min-pss 1M # exclude entries below threshold
 
 Run `smem --help` for the full option reference.
 
+## Capturing data from embedded/remote targets
+
+smem can analyse offline captures taken with `smemcap`. This repository includes
+an extended version in [`smemcap-c/`](smemcap-c/) that captures additional
+`/proc` entries beyond the standard BusyBox tool — including `smaps_rollup`,
+`status`, `cgroup`, `swaps`, and PSI memory pressure. See
+[`smemcap-c/README.md`](smemcap-c/README.md) for build instructions.
+
+```bash
+# On the target device
+smemcap > capture.tar
+# Then analyse on your workstation
+smem -S capture.tar
+```
+
 ## Claude Code integration
 
 If you use [Claude Code](https://claude.ai/code), a `/smem` skill is included. It detects available captures, picks the right mode (overview, diff, or series), runs smem, interprets the output, and suggests follow-up commands.
