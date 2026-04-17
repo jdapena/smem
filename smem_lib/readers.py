@@ -109,6 +109,9 @@ class TarfileReader(ProcReader):
         except KeyError:
             return ''
 
+    def use_smaps_rollup(self):
+        return any(m.name.endswith('/smaps_rollup') for m in self._tar.getmembers())
+
 
 class Proc(object):
     """Helper class to handle /proc/ filesystem data"""
@@ -196,3 +199,96 @@ class ProcessData(Proc):
     def pidusername(self, pid):
         """Return PID username"""
         return self.username(self.piduser(pid))
+
+    def pidcgroup(self, pid):
+        """Return the primary cgroup path for a process, empty string if unavailable.
+
+        Prefers the memory controller path (cgroup v1) or the unified hierarchy
+        path (cgroup v2), falling back to the first entry found.
+        """
+        content = self.read('%s/cgroup' % pid)
+        first = ''
+        for line in content.splitlines():
+            parts = line.split(':', 2)
+            if len(parts) != 3:
+                continue
+            if not first:
+                first = parts[2]
+            if parts[1] == '':        # cgroup v2 unified hierarchy
+                return parts[2]
+            if parts[1] == 'memory':  # cgroup v1 memory controller
+                return parts[2]
+        return first
+
+    def pidvmpeak(self, pid):
+        """Return VmPeak in KB from /proc/[pid]/status, or 0 if unavailable."""
+        content = self.read('%s/status' % pid)
+        for line in content.splitlines():
+            if line.startswith('VmPeak:'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        return int(parts[1])
+                    except ValueError:
+                        pass
+        return 0
+
+
+class SwapsData(Proc):
+    """Parses /proc/swaps into a list of active swap device records."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._swaps = []
+        for line in self.readlines('swaps')[1:]:  # skip header row
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    self._swaps.append(dict(
+                        filename=parts[0],
+                        type=parts[1],
+                        size=int(parts[2]),
+                        used=int(parts[3]),
+                        priority=int(parts[4]),
+                    ))
+                except (ValueError, IndexError):
+                    pass
+
+    @property
+    def swaps(self):
+        return self._swaps
+
+    def available(self):
+        return bool(self._swaps)
+
+
+class PsiData(Proc):
+    """Parses /proc/pressure/memory (PSI, kernel >= 4.20).
+
+    Provides some/full avg10/avg60/avg300 stall percentages and cumulative
+    total stall time in microseconds.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._psi = {}
+        for line in self.readlines('pressure/memory'):
+            parts = line.split()
+            if not parts:
+                continue
+            level = parts[0]  # 'some' or 'full'
+            d = {}
+            for kv in parts[1:]:
+                k, _, v = kv.partition('=')
+                try:
+                    d[k] = float(v) if '.' in v else int(v)
+                except ValueError:
+                    pass
+            if d:
+                self._psi[level] = d
+
+    def available(self):
+        return bool(self._psi)
+
+    def get(self, level, key, default=0.0):
+        return self._psi.get(level, {}).get(key, default)
