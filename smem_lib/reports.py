@@ -11,7 +11,7 @@ from smem_lib.collection import (
     maptotals, pidmaps, pidmaps_rollup, processtotals,
     usertotals, kernelsize, totalmem,
 )
-from smem_lib.readers import MemData, ProcessData
+from smem_lib.readers import MemData, ProcessData, SwapsData, PsiData
 from smem_lib.formatting import (
     showamount, showdelta, widthstr, showtable,
     _emit_html, _emit_markdown,
@@ -109,6 +109,20 @@ def showpids(pidmaps_f=pidmaps) -> None:
             "% 8a",
             sum,
             "virtual set size (total virtual memory mapped)",
+        ),
+        vmpeak=(
+            "VmPeak",
+            lambda n: _g.proc.pidvmpeak(n),
+            "% 8a",
+            None,
+            "peak resident set size (from /proc/[pid]/status)",
+        ),
+        cgroup=(
+            "CGroup",
+            lambda n: _g.proc.pidcgroup(n),
+            widthstr("cgroup", _g.options.cgroup_width, 24),
+            None,
+            "primary cgroup path (from /proc/[pid]/cgroup)",
         ),
     )
     columns = _g.options.columns or "pid user command swap uss pss rss"
@@ -320,6 +334,23 @@ def showsystem() -> None:
 
     columns = _g.options.columns or "area used cache noncache"
     showtable(list(range(len(l))), fields, columns.split(), _g.options.sort or "order")
+
+    sw = SwapsData()
+    if sw.available():
+        print("")
+        print("%-36s %10s %10s" % ("Swap device", "Size", "Used"))
+        for s in sw.swaps:
+            print("%-36s %10s %10s" % (
+                s['filename'][:36],
+                showamount(s['size'], s['size']),
+                showamount(s['used'], s['size']),
+            ))
+
+    psi = PsiData()
+    if psi.available():
+        print("")
+        print("Memory pressure (PSI):  some avg10=%.2f%%  full avg10=%.2f%%" % (
+            psi.get('some', 'avg10'), psi.get('full', 'avg10')))
 
 
 def showseries():
