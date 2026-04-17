@@ -10,6 +10,13 @@ readme = "README.md"
 license = {text = "GPL-2.0-or-later"}
 requires-python = ">=3.6"
 dependencies = []
+maintainers = [
+  {name = "Jose Dapena Paz", email = "jdapena@igalia.com"},
+]
+
+[project.urls]
+Homepage = "https://github.com/jdapena/smem"
+Repository = "https://github.com/jdapena/smem"
 
 [project.scripts]
 smem = "smem_lib.cli:main"
