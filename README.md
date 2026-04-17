@@ -83,6 +83,17 @@ smem --min-pss 1M # exclude entries below threshold
 
 Run `smem --help` for the full option reference.
 
+## Claude Code integration
+
+If you use [Claude Code](https://claude.ai/code), a `/smem` skill is included. It detects available captures, picks the right mode (overview, diff, or series), runs smem, interprets the output, and suggests follow-up commands.
+
+```
+/smem                        # auto-detect captures in the working directory
+/smem capture.tar            # analyse a specific capture
+/smem before.tar after.tar   # diff two captures
+/smem --min-pss 50M *.tar    # pass extra flags
+```
+
 ## Credits
 
 This project is a fork of [kwkroeger/smem](https://github.com/kwkroeger/smem), which is itself a Python 3 port of the original [smem](http://www.selenic.com/smem/).
