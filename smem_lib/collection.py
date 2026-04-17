@@ -105,7 +105,8 @@ def aggregate_name(name, mode=""):
 def maptotals(pids, allowed_cpu_count, is_aggregate=False):
     filtered_pids = filter(
         lambda pid: not filters(_g.options.processfilter, pid, _g.proc.pidcmd) and
-                    not filters(_g.options.userfilter, pid, _g.proc.pidusername),
+                    not filters(_g.options.userfilter, pid, _g.proc.pidusername) and
+                    not filters(_g.options.cgroupfilter, pid, _g.proc.pidcgroup),
         pids)
 
     totals = {}
@@ -212,7 +213,8 @@ def pidtotals(pid, pidmaps_f=pidmaps) -> Dict[str, int]:
 def usertotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
     filtered_pids = list(filter(
         lambda p: not filters(_g.options.processfilter, p, _g.proc.pidcmd) and
-                  not filters(_g.options.userfilter, p, _g.proc.pidusername),
+                  not filters(_g.options.userfilter, p, _g.proc.pidusername) and
+                  not filters(_g.options.cgroupfilter, p, _g.proc.pidcgroup),
         pids))
 
     totals = {}
@@ -254,7 +256,8 @@ def usertotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
 def processtotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
     filtered_pids = filter(
         lambda pid: not filters(_g.options.processfilter, pid, _g.proc.pidcmd) and
-                    not filters(_g.options.userfilter, pid, _g.proc.pidusername),
+                    not filters(_g.options.userfilter, pid, _g.proc.pidusername) and
+                    not filters(_g.options.cgroupfilter, pid, _g.proc.pidcgroup),
         pids)
     totals = {}
     with Pool(processes=allowed_cpu_count) as pool:
