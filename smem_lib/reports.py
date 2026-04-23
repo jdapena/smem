@@ -8,8 +8,8 @@ import sys
 
 from smem_lib import _globals as _g
 from smem_lib.collection import (
-    maptotals, pidmaps, pidmaps_rollup, processtotals,
-    usertotals, kernelsize, totalmem,
+    maptotals, pidmaps, pidmaps_rollup, processtotals, processtotals_gpu,
+    usertotals, kernelsize, totalmem, gpu_drm_totals, nvidia_gpu_info,
 )
 from smem_lib.readers import MemData, ProcessData, SwapsData, PsiData
 from smem_lib.formatting import (
@@ -53,7 +53,10 @@ def showchromium(pidmaps_f=pidmaps) -> None:
 
 def showpids(pidmaps_f=pidmaps) -> None:
     p = _g.proc.pids()
-    pt = processtotals(p, _g.proc.allowed_cpu_count(), pidmaps_f)
+    if getattr(_g.options, 'gpu', False):
+        pt = processtotals_gpu(p, _g.proc.allowed_cpu_count(), pidmaps_f)
+    else:
+        pt = processtotals(p, _g.proc.allowed_cpu_count(), pidmaps_f)
     pss_min, rss_min = _mem_thresholds()
     if pss_min or rss_min:
         pt = {k: v for k, v in pt.items()
@@ -123,6 +126,20 @@ def showpids(pidmaps_f=pidmaps) -> None:
             widthstr("cgroup", _g.options.cgroup_width, 24),
             None,
             "primary cgroup path (from /proc/[pid]/cgroup)",
+        ),
+        gpu_vram=(
+            "GPU VRAM",
+            lambda n: pt[n].get("gpu_vram", 0),
+            "% 9a",
+            sum,
+            "GPU VRAM allocated (via DRM fdinfo, requires kernel 5.10+)",
+        ),
+        gpu_gtt=(
+            "GPU GTT",
+            lambda n: pt[n].get("gpu_gtt", 0),
+            "% 9a",
+            sum,
+            "GPU GTT (system RAM mapped to GPU) allocated (via DRM fdinfo)",
         ),
     )
     columns = _g.options.columns or "pid user command swap uss pss rss"
@@ -224,6 +241,34 @@ def showmaps(is_aggregate=False) -> None:
             sum,
             "average RSS per PID",
         ),
+        shared_exec=(
+            "Shared exec",
+            lambda n: pt[n]["shared_exec"],
+            "% 11a",
+            sum,
+            "RSS in shared executable mappings (code)",
+        ),
+        shared_data=(
+            "Shared data",
+            lambda n: pt[n]["shared_data"],
+            "% 11a",
+            sum,
+            "RSS in shared non-executable mappings (shared data/mmap)",
+        ),
+        priv_ro=(
+            "Priv r/o",
+            lambda n: pt[n]["priv_ro"],
+            "% 8a",
+            sum,
+            "RSS in private read-only mappings (constants, rodata)",
+        ),
+        priv_rw=(
+            "Priv r/w",
+            lambda n: pt[n]["priv_rw"],
+            "% 8a",
+            sum,
+            "RSS in private read-write mappings (relocations, data, stack, heap)",
+        ),
     )
     columns = _g.options.columns or "map pids avgpss pss"
     showtable(list(pt.keys()), fields, columns.split(), _g.options.sort or "pss")
@@ -289,6 +334,38 @@ def showusers(pidmaps_f=pidmaps) -> None:
     )
     columns = _g.options.columns or "user count swap uss pss rss"
     showtable(list(pt.keys()), fields, columns.split(), _g.options.sort or "pss")
+
+
+def showgpu() -> None:
+    """Show system-wide GPU memory info: AMD VRAM totals and NVIDIA metadata."""
+    drm = gpu_drm_totals()
+    nvidia = nvidia_gpu_info()
+
+    if not drm and not nvidia:
+        print("No GPU memory information available.")
+        print("(AMD VRAM requires amdgpu driver; NVIDIA requires proprietary driver.)")
+        return
+
+    if drm:
+        mt = totalmem()
+        fields = dict(
+            card=("Card", lambda n: drm[n]["card"], "%-10s", None, "DRM card name"),
+            vram_total=("VRAM Total", lambda n: drm[n].get("vram_total", 0), "%10a", sum, "total VRAM"),
+            vram_used=("VRAM Used",  lambda n: drm[n].get("vram_used",  0), "%10a", sum, "used VRAM"),
+            gtt_total=("GTT Total",  lambda n: drm[n].get("gtt_total",  0), "%10a", sum, "total GTT"),
+            gtt_used=("GTT Used",   lambda n: drm[n].get("gtt_used",   0), "%10a", sum, "used GTT"),
+        )
+        columns = _g.options.columns or "card vram_total vram_used gtt_total gtt_used"
+        showtable(list(range(len(drm))), fields, columns.split(), _g.options.sort or "card")
+
+    if nvidia:
+        if drm:
+            print("")
+        print("%-16s  %-44s  %s" % ("PCI address", "Model", "UUID"))
+        for g in nvidia:
+            print("%-16s  %-44s  %s" % (
+                g.get("pci", ""), g.get("model", "unknown")[:44], g.get("uuid", ""),
+            ))
 
 
 def showsystem() -> None:

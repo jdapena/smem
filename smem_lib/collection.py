@@ -83,6 +83,7 @@ def aggregate_name(name, mode=""):
         return "[shm]"
     elif (name.startswith("/dev/dri") or name.startswith("/dev/mali") or
           name.startswith("/dev/pvr") or name.startswith("/dev/kgsl") or
+          name.startswith("/dev/galcore") or
           "udmabuf" in name):
         return "[gpu devices]"
     elif name.startswith("/dev"):
@@ -133,12 +134,29 @@ def maptotals(pids, allowed_cpu_count, is_aggregate=False):
                         referenced=0,
                         swap=0,
                         pids=0,
+                        shared_exec=0,
+                        shared_data=0,
+                        priv_ro=0,
+                        priv_rw=0,
                     )
                 else:
                     t = totals[name]
 
                 for k in t:
                     t[k] += maps[m].get(k, 0)
+
+                mode = maps[m].get("mode", "")
+                seg_shared = maps[m].get("shared_clean", 0) + maps[m].get("shared_dirty", 0)
+                seg_private = maps[m].get("private_clean", 0) + maps[m].get("private_dirty", 0)
+                if "x" in mode:
+                    t["shared_exec"] += seg_shared
+                else:
+                    t["shared_data"] += seg_shared
+                if "w" in mode:
+                    t["priv_rw"] += seg_private
+                else:
+                    t["priv_ro"] += seg_private
+
                 t["count"] += 1
                 if name not in seen:
                     t["pids"] += 1
@@ -266,6 +284,110 @@ def processtotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
                 totals[p["pid"]] = p
 
     return totals
+
+
+def pid_gpu_memory(pid):
+    """Return per-GPU VRAM/GTT totals for one process via DRM fdinfo.
+
+    Returns a dict keyed by pdev (PCI address string), each value a dict with
+    'driver' and summed memory region keys in KiB (e.g. 'vram', 'gtt', 'cpu').
+    Returns {} when no DRM GPU fds are found or fdinfo is unavailable.
+    """
+    result = {}
+    for fd in _g.proc.list_pid_fdinfo(pid):
+        content = _g.proc.read_fdinfo(pid, fd)
+        if not content:
+            continue
+        pdev = None
+        driver = None
+        regions = {}
+        for line in content.splitlines():
+            if line.startswith("drm-pdev:"):
+                pdev = line.split(":", 1)[1].strip()
+            elif line.startswith("drm-driver:"):
+                driver = line.split(":", 1)[1].strip()
+            elif line.startswith("drm-memory-"):
+                key_raw, _, val_raw = line.partition(":")
+                region = key_raw[len("drm-memory-"):].strip()
+                val_str = val_raw.strip().split()[0] if val_raw.strip() else "0"
+                unit = val_raw.strip().split()[1] if len(val_raw.strip().split()) > 1 else ""
+                try:
+                    val = int(val_str)
+                except ValueError:
+                    continue
+                if unit == "MiB":
+                    val *= 1024
+                elif unit == "GiB":
+                    val *= 1024 * 1024
+                elif unit == "B":
+                    val = val // 1024
+                regions[region] = regions.get(region, 0) + val
+        if pdev and regions:
+            entry = result.setdefault(pdev, {"driver": driver or ""})
+            for k, v in regions.items():
+                entry[k] = entry.get(k, 0) + v
+    return result
+
+
+def processtotals_gpu(pids, allowed_cpu_count, pidmaps_f=None):
+    """Like processtotals() but adds gpu_vram and gpu_gtt keys (KiB) per process."""
+    if pidmaps_f is None:
+        pidmaps_f = pidmaps_rollup if _g.proc.use_smaps_rollup() else pidmaps
+    base = processtotals(pids, allowed_cpu_count, pidmaps_f)
+    with Pool(processes=allowed_cpu_count) as pool:
+        gpu_results = pool.map(pid_gpu_memory, list(base.keys()))
+    for pid, gpu in zip(list(base.keys()), gpu_results):
+        base[pid]["gpu_vram"] = sum(v.get("vram", 0) for v in gpu.values())
+        base[pid]["gpu_gtt"] = sum(v.get("gtt", 0) for v in gpu.values())
+    return base
+
+
+def gpu_drm_totals():
+    """Return AMD VRAM/GTT system-wide totals from sysfs DRM entries.
+
+    Returns a list of dicts, one per card, with keys: card, vram_total,
+    vram_used, gtt_total, gtt_used (all in KiB).  Empty list if unavailable.
+    """
+    results = []
+    for card in _g.proc.list_gpu_drm_cards():
+        entry = {"card": card}
+        for key, filename in (
+            ("vram_total", "mem_info_vram_total"),
+            ("vram_used",  "mem_info_vram_used"),
+            ("gtt_total",  "mem_info_gtt_total"),
+            ("gtt_used",   "mem_info_gtt_used"),
+            ("vis_vram_total", "mem_info_vis_vram_total"),
+            ("vis_vram_used",  "mem_info_vis_vram_used"),
+        ):
+            raw = _g.proc.read_gpu_drm(card, filename).strip()
+            try:
+                entry[key] = int(raw) // 1024
+            except ValueError:
+                pass
+        if len(entry) > 1:
+            results.append(entry)
+    return results
+
+
+def nvidia_gpu_info():
+    """Return NVIDIA GPU metadata from /proc/driver/nvidia/gpus/*/information.
+
+    Returns a list of dicts with keys: pci, model, uuid (strings).
+    Empty list if the NVIDIA driver is not loaded or no data is captured.
+    """
+    results = []
+    for pci in _g.proc.list_nvidia_gpus():
+        content = _g.proc.read_nvidia_gpu_info(pci)
+        if not content:
+            continue
+        entry = {"pci": pci}
+        for line in content.splitlines():
+            if line.startswith("Model:"):
+                entry["model"] = line.split(":", 1)[1].strip()
+            elif line.startswith("GPU UUID:"):
+                entry["uuid"] = line.split(":", 1)[1].strip()
+        results.append(entry)
+    return results
 
 
 def sortmaps(totals, key):
