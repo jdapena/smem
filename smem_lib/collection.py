@@ -1,15 +1,26 @@
 """Raw data collection and computation from /proc or tarfile sources."""
 
 import functools
+import multiprocessing
 import os
 import re
 import sys
-from multiprocessing import Pool
 from typing import Dict
 
 from smem_lib import _globals as _g
 from smem_lib.utils import filters, fromunits
 from smem_lib.readers import MemData, ProcessData
+
+# Worker processes rely on inheriting the parent's _g.options/_g.proc state,
+# which only happens with the "fork" start method. Python 3.14 changed the
+# default to "forkserver" on Linux, under which workers are fresh processes
+# with an uninitialized _g and silently produce no data. smem is a Linux
+# /proc tool, so "fork" is always available; pin it explicitly.
+_mp_context = multiprocessing.get_context("fork")
+
+
+def Pool(*args, **kwargs):
+    return _mp_context.Pool(*args, **kwargs)
 
 
 def totalmem():
