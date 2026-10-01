@@ -8,7 +8,7 @@ from smem_lib import _globals as _g
 from smem_lib.readers import ProcessData
 from smem_lib.collection import pidmaps, pidmaps_rollup
 from smem_lib.reports import (
-    showchromium, showpids, showmaps, showusers, showsystem, showseries, showdiff,
+    showchromium, showpids, showmaps, showusers, showsystem, showgpu, showseries, showdiff,
 )
 
 
@@ -96,6 +96,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
 
     show_group.add_argument(
         "-w", "--system", action="store_true", help="Show whole system"
+    )
+
+    show_group.add_argument(
+        "--gpu", action="store_true",
+        help="Show GPU memory (adds gpu_vram/gpu_gtt columns; use with -w for GPU totals)",
     )
 
     show_group.add_argument(
@@ -220,6 +225,15 @@ def main() -> None:
             showusers(pidmaps_f)
         elif _g.options.system:
             showsystem()
+            if _g.options.gpu:
+                print("")
+                showgpu()
+        elif _g.options.gpu and not any([
+                _g.options.mappings, _g.options.aggregates,
+                _g.options.users, _g.options.chromium]):
+            showgpu()
+            print("")
+            showpids(pidmaps_f)
         else:
             showpids(pidmaps_f)
     except IOError as e:

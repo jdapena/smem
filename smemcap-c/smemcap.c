@@ -101,6 +101,95 @@ static int is_pid(const char *s) {
     return 1;
 }
 
+/* Returns 1 if data contains a line starting with needle. */
+static int has_line_prefix(const char *data, size_t size, const char *needle, size_t nlen) {
+    size_t i;
+    if (size < nlen) return 0;
+    if (memcmp(data, needle, nlen) == 0) return 1;
+    for (i = 1; i + nlen <= size; i++)
+        if (data[i-1] == '\n' && memcmp(data+i, needle, nlen) == 0) return 1;
+    return 0;
+}
+
+/* Archive fdinfo fds that expose DRM GPU memory.
+ * Intel i915/xe uses drm-total-* instead of drm-memory-*, so they are
+ * naturally excluded by the prefix check and need no special handling. */
+static void archive_pid_fdinfo(const char *pid, unsigned uid) {
+    char dir_path[128], path[512], tar_name[512];
+    DIR *dir;
+    struct dirent *de;
+    size_t size, rem;
+    char *data;
+
+    snprintf(dir_path, sizeof(dir_path), "/proc/%s/fdinfo", pid);
+    dir = opendir(dir_path);
+    if (!dir) return;
+
+    while ((de = readdir(dir))) {
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+        snprintf(path, sizeof(path), "/proc/%s/fdinfo/%s", pid, de->d_name);
+        data = read_proc(path, &size);
+        if (!data) continue;
+        if (has_line_prefix(data, size, "drm-memory-", 11)) {
+            snprintf(tar_name, sizeof(tar_name), "%s/fdinfo/%s", pid, de->d_name);
+            write_header(tar_name, size, uid);
+            fwrite(data, 1, size, stdout);
+            rem = size % BLOCK;
+            if (rem) fwrite(ZEROS, 1, BLOCK - rem, stdout);
+        }
+        free(data);
+    }
+    closedir(dir);
+}
+
+/* Archive AMD sysfs VRAM stats and NVIDIA GPU metadata. */
+static void archive_gpu_system(void) {
+    static const char * const amd_mem_files[] = {
+        "mem_info_vram_total", "mem_info_vram_used",
+        "mem_info_gtt_total",  "mem_info_gtt_used",
+        "mem_info_vis_vram_total", "mem_info_vis_vram_used",
+        NULL
+    };
+    DIR *dir;
+    struct dirent *de;
+    char tar_name[512], sys_path[512];
+    int i;
+
+    /* DRM cards: AMD VRAM sysfs files (silently absent on non-AMD cards). */
+    dir = opendir("/sys/class/drm");
+    if (dir) {
+        while ((de = readdir(dir))) {
+            /* Match card0, card1, … but not card1-DP-1 or renderD128. */
+            if (strncmp(de->d_name, "card", 4) != 0) continue;
+            if (de->d_name[4] < '0' || de->d_name[4] > '9') continue;
+            if (de->d_name[5] != '\0' && de->d_name[5] != '\n' &&
+                    !(de->d_name[5] >= '0' && de->d_name[5] <= '9')) continue;
+            for (i = 0; amd_mem_files[i]; i++) {
+                snprintf(tar_name, sizeof(tar_name),
+                         "gpu/drm/%s/%s", de->d_name, amd_mem_files[i]);
+                snprintf(sys_path, sizeof(sys_path),
+                         "/sys/class/drm/%s/device/%s", de->d_name, amd_mem_files[i]);
+                archive(tar_name, sys_path, 0);
+            }
+        }
+        closedir(dir);
+    }
+
+    /* NVIDIA: GPU metadata from /proc/driver/nvidia/gpus/. */
+    dir = opendir("/proc/driver/nvidia/gpus");
+    if (dir) {
+        while ((de = readdir(dir))) {
+            if (de->d_name[0] == '.') continue;
+            snprintf(tar_name, sizeof(tar_name),
+                     "gpu/nvidia/gpus/%s/information", de->d_name);
+            snprintf(sys_path, sizeof(sys_path),
+                     "/proc/driver/nvidia/gpus/%s/information", de->d_name);
+            archive(tar_name, sys_path, 0);
+        }
+        closedir(dir);
+    }
+}
+
 static __attribute__((noinline)) void archive_pid(const char *pid) {
     char tar_name[128], path[128];
     struct stat st;
@@ -119,6 +208,7 @@ static __attribute__((noinline)) void archive_pid(const char *pid) {
     archive_pid_file(pid, "stat",         uid);
     archive_pid_file(pid, "status",       uid);
     archive_pid_file(pid, "cgroup",       uid);
+    archive_pid_fdinfo(pid, uid);
 }
 
 int main(void) {
@@ -130,6 +220,7 @@ int main(void) {
     archive("version",         "/proc/version",         0);
     archive("swaps",           "/proc/swaps",           0);
     archive("pressure/memory", "/proc/pressure/memory", 0);
+    archive_gpu_system();
 
     proc = opendir("/proc");
     if (!proc) return 1;

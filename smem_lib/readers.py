@@ -53,6 +53,24 @@ class ProcReader(object):
     def allowed_cpu_count(self):
         return 1
 
+    def list_pid_fdinfo(self, pid) -> List[str]:
+        return []
+
+    def read_fdinfo(self, pid, fd) -> str:
+        return ""
+
+    def list_gpu_drm_cards(self) -> List[str]:
+        return []
+
+    def read_gpu_drm(self, card, filename) -> str:
+        return ""
+
+    def list_nvidia_gpus(self) -> List[str]:
+        return []
+
+    def read_nvidia_gpu_info(self, pci) -> str:
+        return ""
+
 
 class ProcFSReader(ProcReader):
     def __init__(self) -> None:
@@ -84,6 +102,45 @@ class ProcFSReader(ProcReader):
     def allowed_cpu_count(self):
         return cpu_count()
 
+    def list_pid_fdinfo(self, pid) -> List[str]:
+        path = "/proc/%s/fdinfo" % pid
+        try:
+            return [f for f in os.listdir(path) if f.isdigit()]
+        except OSError:
+            return []
+
+    def read_fdinfo(self, pid, fd) -> str:
+        try:
+            return open("/proc/%s/fdinfo/%s" % (pid, fd)).read()
+        except OSError:
+            return ""
+
+    def list_gpu_drm_cards(self) -> List[str]:
+        try:
+            return [e for e in os.listdir("/sys/class/drm")
+                    if re.fullmatch(r'card\d+', e)]
+        except OSError:
+            return []
+
+    def read_gpu_drm(self, card, filename) -> str:
+        try:
+            return open("/sys/class/drm/%s/device/%s" % (card, filename)).read()
+        except OSError:
+            return ""
+
+    def list_nvidia_gpus(self) -> List[str]:
+        try:
+            return [e for e in os.listdir("/proc/driver/nvidia/gpus")
+                    if e[0] != '.']
+        except OSError:
+            return []
+
+    def read_nvidia_gpu_info(self, pci) -> str:
+        try:
+            return open("/proc/driver/nvidia/gpus/%s/information" % pci).read()
+        except OSError:
+            return ""
+
 
 class TarfileReader(ProcReader):
     def __init__(self, filename) -> None:
@@ -111,6 +168,39 @@ class TarfileReader(ProcReader):
 
     def use_smaps_rollup(self):
         return any(m.name.endswith('/smaps_rollup') for m in self._tar.getmembers())
+
+    def list_pid_fdinfo(self, pid) -> List[str]:
+        prefix = "%s/fdinfo/" % pid
+        return [m.name[len(prefix):] for m in self._tar.getmembers()
+                if m.name.startswith(prefix) and m.name[len(prefix):].isdigit()]
+
+    def read_fdinfo(self, pid, fd) -> str:
+        return self.read("%s/fdinfo/%s" % (pid, fd))
+
+    def list_gpu_drm_cards(self) -> List[str]:
+        cards = set()
+        for m in self._tar.getmembers():
+            if m.name.startswith("gpu/drm/"):
+                parts = m.name.split("/")
+                if len(parts) >= 3:
+                    cards.add(parts[2])
+        return list(cards)
+
+    def read_gpu_drm(self, card, filename) -> str:
+        return self.read("gpu/drm/%s/%s" % (card, filename))
+
+    def list_nvidia_gpus(self) -> List[str]:
+        prefix = "gpu/nvidia/gpus/"
+        gpus = set()
+        for m in self._tar.getmembers():
+            if m.name.startswith(prefix):
+                parts = m.name.split("/")
+                if len(parts) >= 4:
+                    gpus.add(parts[3])
+        return list(gpus)
+
+    def read_nvidia_gpu_info(self, pci) -> str:
+        return self.read("gpu/nvidia/gpus/%s/information" % pci)
 
 
 class Proc(object):
@@ -145,6 +235,24 @@ class Proc(object):
 
     def allowed_cpu_count(self):
         return self._reader.allowed_cpu_count()
+
+    def list_pid_fdinfo(self, pid) -> List[str]:
+        return self._reader.list_pid_fdinfo(pid)
+
+    def read_fdinfo(self, pid, fd) -> str:
+        return self._reader.read_fdinfo(pid, fd)
+
+    def list_gpu_drm_cards(self) -> List[str]:
+        return self._reader.list_gpu_drm_cards()
+
+    def read_gpu_drm(self, card, filename) -> str:
+        return self._reader.read_gpu_drm(card, filename)
+
+    def list_nvidia_gpus(self) -> List[str]:
+        return self._reader.list_nvidia_gpus()
+
+    def read_nvidia_gpu_info(self, pci) -> str:
+        return self._reader.read_nvidia_gpu_info(pci)
 
 
 class MemData(Proc):
