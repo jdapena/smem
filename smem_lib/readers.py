@@ -142,10 +142,26 @@ class ProcFSReader(ProcReader):
             return ""
 
 
+class SourceError(Exception):
+    """A capture given as data source cannot be used."""
+
+
 class TarfileReader(ProcReader):
     def __init__(self, filename) -> None:
         self._filename = filename
-        self._tar = tarfile.open(filename)
+        try:
+            self._tar = tarfile.open(filename)
+        except OSError as e:
+            raise SourceError("cannot open capture %s: %s"
+                              % (filename, e.strerror or e)) from e
+        except tarfile.TarError as e:
+            raise SourceError("%s is not a valid capture (not a tar archive)"
+                              % filename) from e
+        try:
+            self._tar.getmember("meminfo")
+        except KeyError:
+            raise SourceError("%s is not a valid capture (no meminfo found)"
+                              % filename) from None
 
     def listpids(self) -> List[str]:
         for tarinfo in self._tar:

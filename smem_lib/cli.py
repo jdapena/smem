@@ -5,7 +5,7 @@ import errno
 import sys
 
 from smem_lib import _globals as _g
-from smem_lib.readers import ProcessData
+from smem_lib.readers import ProcessData, SourceError
 from smem_lib.collection import pidmaps, pidmaps_rollup
 from smem_lib.reports import (
     showchromium, showpids, showmaps, showusers, showsystem, showgpu, showseries, showdiff,
@@ -212,10 +212,11 @@ def main() -> None:
     """Main entry point for smem."""
     _g.options = parse_arguments(sys.argv)
     _g.ignore_autosize = set()
-    _g.proc = ProcessData()
-    pidmaps_f = pidmaps_rollup if _g.proc.use_smaps_rollup() else pidmaps
 
     try:
+        _g.proc = ProcessData()
+        pidmaps_f = pidmaps_rollup if _g.proc.use_smaps_rollup() else pidmaps
+
         if _g.options.series:
             if _g.options.list_columns:
                 print("--series has a fixed layout and does not support --columns")
@@ -245,8 +246,12 @@ def main() -> None:
             showpids(pidmaps_f)
         else:
             showpids(pidmaps_f)
+    except SourceError as e:
+        sys.stderr.write("smem: %s\n" % e)
+        sys.exit(1)
     except IOError as e:
-        if e.errno == errno.EPIPE:
-            pass
+        if e.errno != errno.EPIPE:
+            sys.stderr.write("smem: %s\n" % e)
+            sys.exit(1)
     except KeyboardInterrupt:
         pass
