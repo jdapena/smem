@@ -297,46 +297,69 @@ def processtotals(pids, allowed_cpu_count, pidmaps_f=pidmaps):
     return totals
 
 
+_DRM_MEM_RE = re.compile(r'^drm-(total|memory)-([\w]+):\s*(\d+)(?:\s*(KiB|MiB|GiB))?\s*$')
+_DRM_UNITS = {None: 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
+
+
+def _drm_region_class(region):
+    """Map a DRM memory region name to 'vram' or 'gtt' (None if neither).
+
+    amdgpu: vram, gtt; xe: vram0.., gtt; i915: local0.. (device memory).
+    """
+    if region.startswith("vram") or region.startswith("local"):
+        return "vram"
+    if region == "gtt":
+        return "gtt"
+    return None
+
+
 def pid_gpu_memory(pid):
     """Return per-GPU VRAM/GTT totals for one process via DRM fdinfo.
 
     Returns a dict keyed by pdev (PCI address string), each value a dict with
-    'driver' and summed memory region keys in KiB (e.g. 'vram', 'gtt', 'cpu').
+    'driver' and summed memory region keys in KiB (e.g. 'vram', 'gtt').
     Returns {} when no DRM GPU fds are found or fdinfo is unavailable.
+
+    Follows the kernel DRM client usage stats spec: drm-total-<region> is
+    preferred over the legacy drm-memory-<region>, values without a unit
+    are bytes, and fds sharing a drm-client-id (e.g. dup'd fds) describe
+    the same client and are counted once.
     """
     result = {}
+    seen = set()
     for fd in _g.proc.list_pid_fdinfo(pid):
         content = _g.proc.read_fdinfo(pid, fd)
         if not content:
             continue
         pdev = None
         driver = None
-        regions = {}
+        client_id = None
+        regions = {"total": {}, "memory": {}}
         for line in content.splitlines():
             if line.startswith("drm-pdev:"):
                 pdev = line.split(":", 1)[1].strip()
             elif line.startswith("drm-driver:"):
                 driver = line.split(":", 1)[1].strip()
-            elif line.startswith("drm-memory-"):
-                key_raw, _, val_raw = line.partition(":")
-                region = key_raw[len("drm-memory-"):].strip()
-                val_str = val_raw.strip().split()[0] if val_raw.strip() else "0"
-                unit = val_raw.strip().split()[1] if len(val_raw.strip().split()) > 1 else ""
-                try:
-                    val = int(val_str)
-                except ValueError:
-                    continue
-                if unit == "MiB":
-                    val *= 1024
-                elif unit == "GiB":
-                    val *= 1024 * 1024
-                elif unit == "B":
-                    val = val // 1024
-                regions[region] = regions.get(region, 0) + val
-        if pdev and regions:
-            entry = result.setdefault(pdev, {"driver": driver or ""})
-            for k, v in regions.items():
-                entry[k] = entry.get(k, 0) + v
+            elif line.startswith("drm-client-id:"):
+                client_id = line.split(":", 1)[1].strip()
+            else:
+                m = _DRM_MEM_RE.match(line)
+                if m:
+                    kind, region, val, unit = m.groups()
+                    regions[kind][region] = int(val) * _DRM_UNITS[unit] // 1024
+        if not pdev:
+            continue
+        if client_id is not None:
+            key = (pdev, driver, client_id)
+            if key in seen:
+                continue
+            seen.add(key)
+        chosen = regions["total"] or regions["memory"]
+        entry = result.setdefault(pdev, {"driver": driver or ""})
+        for region, val in chosen.items():
+            cls = _drm_region_class(region)
+            if cls:
+                entry[cls] = entry.get(cls, 0) + val
     return result
 
 

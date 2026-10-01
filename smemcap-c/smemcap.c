@@ -111,9 +111,8 @@ static int has_line_prefix(const char *data, size_t size, const char *needle, si
     return 0;
 }
 
-/* Archive fdinfo fds that expose DRM GPU memory.
- * Intel i915/xe uses drm-total-* instead of drm-memory-*, so they are
- * naturally excluded by the prefix check and need no special handling. */
+/* Archive fdinfo fds that expose DRM GPU memory: drm-total-* (current
+ * spec, used by amdgpu, i915 and xe) or the legacy drm-memory-*. */
 static void archive_pid_fdinfo(const char *pid, unsigned uid) {
     char dir_path[128], path[512], tar_name[512];
     DIR *dir;
@@ -130,7 +129,8 @@ static void archive_pid_fdinfo(const char *pid, unsigned uid) {
         snprintf(path, sizeof(path), "/proc/%s/fdinfo/%s", pid, de->d_name);
         data = read_proc(path, &size);
         if (!data) continue;
-        if (has_line_prefix(data, size, "drm-memory-", 11)) {
+        if (has_line_prefix(data, size, "drm-total-", 10) ||
+                has_line_prefix(data, size, "drm-memory-", 11)) {
             snprintf(tar_name, sizeof(tar_name), "%s/fdinfo/%s", pid, de->d_name);
             write_header(tar_name, size, uid);
             fwrite(data, 1, size, stdout);

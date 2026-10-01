@@ -142,7 +142,10 @@ def showpids(pidmaps_f=pidmaps) -> None:
             "GPU GTT (system RAM mapped to GPU) allocated (via DRM fdinfo)",
         ),
     )
-    columns = _g.options.columns or "pid user command swap uss pss rss"
+    default_columns = "pid user command swap uss pss rss"
+    if getattr(_g.options, 'gpu', False):
+        default_columns += " gpu_vram gpu_gtt"
+    columns = _g.options.columns or default_columns
     showtable(list(pt.keys()), fields, columns.split(), _g.options.sort or "pss")
 
 
