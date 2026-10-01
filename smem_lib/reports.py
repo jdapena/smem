@@ -13,7 +13,7 @@ from smem_lib.collection import (
 )
 from smem_lib.readers import MemData, ProcessData, SwapsData, PsiData
 from smem_lib.formatting import (
-    showamount, showdelta, widthstr, showtable, showfields,
+    showamount, showdelta, widthstr, showtable, showfields, listcolumns,
     _emit_html, _emit_markdown,
 )
 from smem_lib.analysis import (
@@ -132,14 +132,14 @@ def showpids(pidmaps_f=pidmaps) -> None:
             lambda n: pt[n].get("gpu_vram", 0),
             "% 9a",
             sum,
-            "GPU VRAM allocated (via DRM fdinfo, requires kernel 5.10+)",
+            "GPU VRAM allocated (via DRM fdinfo, requires --gpu and kernel 5.10+)",
         ),
         gpu_gtt=(
             "GPU GTT",
             lambda n: pt[n].get("gpu_gtt", 0),
             "% 9a",
             sum,
-            "GPU GTT (system RAM mapped to GPU) allocated (via DRM fdinfo)",
+            "GPU GTT (system RAM mapped to GPU) allocated (via DRM fdinfo, requires --gpu)",
         ),
     )
     default_columns = "pid user command swap uss pss rss"
@@ -736,6 +736,9 @@ def showdiff():
 
     columns = (_g.options.columns or default_columns).split()
     descriptions = {c: _DIFF_COLUMN_DESCRIPTIONS[c] for c in available}
+    if _g.options.list_columns:
+        listcolumns(descriptions, columns)
+        return
     missing = [c for c in columns if c not in descriptions]
     if missing:
         showfields({c: (d,) for c, d in descriptions.items()}, missing)

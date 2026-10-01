@@ -90,6 +90,17 @@ def showfields(fields, f) -> None:
         print("%-*s %s" % (width, l, fields[l][-1]))
 
 
+def listcolumns(descriptions, selected) -> None:
+    """Print available columns as 'name  description', marking selected ones.
+
+    descriptions maps column name to description, in display order.
+    """
+    width = max(len(c) for c in descriptions)
+    for c, desc in descriptions.items():
+        print("%s %-*s  %s" % ("*" if c in selected else " ", width, c, desc))
+    print("\n(* = shown by default, or selected with --columns)")
+
+
 _HTML_CSS = """\
 body{font-family:monospace;font-size:13px;margin:16px}
 h1{font-size:14px;font-weight:bold;margin-bottom:8px}
@@ -206,6 +217,10 @@ def _emit_markdown(col_headers, display_rows, alignments):
 
 
 def showtable(rows, fields, columns, sort) -> None:
+    if _g.options.list_columns:
+        listcolumns({c: fields[c][-1] for c in sorted(fields)}, columns)
+        return
+
     if sort not in fields:
         showfields(fields, sort)
         sys.exit(-1)

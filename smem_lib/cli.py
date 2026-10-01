@@ -37,6 +37,11 @@ def parse_arguments(argv=None) -> argparse.Namespace:
     )
 
     argparser.add_argument(
+        "--list-columns", action="store_true",
+        help="List the columns available for --columns in the selected mode",
+    )
+
+    argparser.add_argument(
         "-a",
         "--autosize",
         action="store_true",
@@ -212,6 +217,9 @@ def main() -> None:
 
     try:
         if _g.options.series:
+            if _g.options.list_columns:
+                print("--series has a fixed layout and does not support --columns")
+                return
             showseries()
         elif _g.options.diff:
             showdiff()
@@ -225,14 +233,15 @@ def main() -> None:
             showusers(pidmaps_f)
         elif _g.options.system:
             showsystem()
-            if _g.options.gpu:
+            if _g.options.gpu and not _g.options.list_columns:
                 print("")
                 showgpu()
         elif _g.options.gpu and not any([
                 _g.options.mappings, _g.options.aggregates,
                 _g.options.users, _g.options.chromium]):
-            showgpu()
-            print("")
+            if not _g.options.list_columns:
+                showgpu()
+                print("")
             showpids(pidmaps_f)
         else:
             showpids(pidmaps_f)
