@@ -100,6 +100,7 @@ th:hover{background:#e0e0e0}
 th.asc::after{content:" \u25b2";font-size:10px}
 th.desc::after{content:" \u25bc";font-size:10px}
 tr:hover td{background:rgba(0,0,0,0.03)}
+tfoot td{font-weight:bold;border-top:2px solid #999;border-bottom:none}
 .bar-cell{position:relative;min-width:60px}
 .bar-bg{position:absolute;left:0;top:1px;bottom:1px;background:rgba(70,130,180,0.22);z-index:0;border-radius:2px}
 .bar-val{position:relative;z-index:1}
@@ -134,7 +135,8 @@ def _html_escape(s):
     return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def _emit_html(title, col_headers, display_rows, raw_rows, bar_col=None):
+def _emit_html(title, col_headers, display_rows, raw_rows, bar_col=None,
+               footer_row=None):
     """Emit a self-contained sortable HTML table to stdout."""
     bar_max = None
     if bar_col is not None and raw_rows:
@@ -171,7 +173,12 @@ def _emit_html(title, col_headers, display_rows, raw_rows, bar_col=None):
             else:
                 lines.append('<td data-val="%s">%s</td>' % (rv, dv))
         lines.append('</tr>')
-    lines.append('</tbody></table><script>%s</script></body></html>' % _HTML_JS)
+    lines.append('</tbody>')
+    if footer_row is not None:
+        # Kept outside <tbody> so column sorting leaves it at the bottom.
+        lines.append('<tfoot><tr>%s</tr></tfoot>'
+                     % ''.join('<td>%s</td>' % _html_escape(c) for c in footer_row))
+    lines.append('</table><script>%s</script></body></html>' % _HTML_JS)
     print('\n'.join(lines))
 
 
@@ -209,6 +216,10 @@ def showtable(rows, fields, columns, sort) -> None:
 
     sorted_rows = sorted(rows, key=lambda n: fields[sort][1](n), reverse=bool(_g.options.reverse))
 
+    if _g.options.totals and _g.options.output in ('json', 'csv'):
+        sys.stderr.write("Warning: --totals is not supported with %s output, ignoring\n"
+                         % _g.options.output)
+
     if _g.options.output == 'json':
         data = [{c: fields[c][1](n) for c in columns} for n in sorted_rows]
         print(json.dumps(data, indent=2))
@@ -242,27 +253,46 @@ def showtable(rows, fields, columns, sort) -> None:
                     d_row.append(str(raw))
             display_rows.append(d_row)
             raw_rows.append(r_row)
+        footer_row = None
+        if _g.options.totals:
+            footer_row = []
+            for c in columns:
+                agg = fields[c][3]
+                if not agg:
+                    footer_row.append('')
+                    continue
+                raw = agg([fields[c][1](n) for n in rows])
+                if 'a' in fields[c][2]:
+                    raw = showamount(raw, st if c == 'swap' else mt)
+                footer_row.append(str(raw))
         bar_col = next((i for i, c in enumerate(columns) if c in ('pss', 'used')), None)
-        _emit_html('smem', col_hdrs, display_rows, raw_rows, bar_col)
+        _emit_html('smem', col_hdrs, display_rows, raw_rows, bar_col, footer_row)
         return
 
     if _g.options.output == 'markdown':
+        def md_cell(c, raw):
+            fmt = fields[c][2]
+            if 'a' in fmt:
+                total = st if c == 'swap' else mt
+                return str(showamount(raw, total))
+            try:
+                return (fmt % raw).strip()
+            except (TypeError, ValueError):
+                return str(raw)
+
         col_hdrs = [fields[c][0] for c in columns]
-        display_rows = []
-        for n in sorted_rows:
-            d_row = []
+        display_rows = [[md_cell(c, fields[c][1](n)) for c in columns]
+                        for n in sorted_rows]
+        if _g.options.totals:
+            t_row = []
             for c in columns:
-                raw = fields[c][1](n)
-                fmt = fields[c][2]
-                if 'a' in fmt:
-                    total = st if c == 'swap' else mt
-                    d_row.append(str(showamount(raw, total)))
+                agg = fields[c][3]
+                if agg:
+                    cell = md_cell(c, agg([fields[c][1](n) for n in rows]))
+                    t_row.append('**%s**' % cell if cell else '')
                 else:
-                    try:
-                        d_row.append((fmt % raw).strip())
-                    except (TypeError, ValueError):
-                        d_row.append(str(raw))
-            display_rows.append(d_row)
+                    t_row.append('')
+            display_rows.append(t_row)
         alignments = ['l' if fields[c][2].startswith('%-') else 'r' for c in columns]
         _emit_markdown(col_hdrs, display_rows, alignments)
         return
