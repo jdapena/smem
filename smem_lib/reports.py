@@ -730,6 +730,21 @@ def showdiff():
         'noncache_a': 'NCACHE_A', 'noncache_b': 'NCACHE_B', 'delta_noncache': '\u0394NCACHE',
     }
 
+    # Totals row: sums for numeric columns, row counts for the key column
+    # (as showtable does for pid/map/role), blank for free-text columns.
+    COUNT_COLS = {'pid', 'map', 'role'}
+    BLANK_COLS = {'status', 'command', 'area'}
+    totals = None
+    if _g.options.totals:
+        if _g.options.output in ('json', 'csv'):
+            sys.stderr.write("Warning: --totals is not supported with %s output, ignoring\n"
+                             % _g.options.output)
+        else:
+            totals = {c: ('' if c in BLANK_COLS else
+                          len(rows) if c in COUNT_COLS else
+                          sum(r[c] for r in rows))
+                      for c in columns}
+
     if _g.options.output == 'json':
         print(json.dumps(rows, indent=2))
         return
@@ -743,27 +758,27 @@ def showdiff():
         return
 
     if _g.options.output == 'html':
+        def html_cell(c, v):
+            if v == '':
+                return ''
+            if c in MEM_COLS:
+                return str(showamount(v, mt))
+            if c in SWAP_COLS:
+                return str(showamount(v, st))
+            if c in DELTA_MEM:
+                return showdelta(v, mt)
+            if c in DELTA_SWP:
+                return showdelta(v, st)
+            return str(v)
+
         col_hdrs = [HEADERS.get(c, c) for c in columns]
-        display_rows, raw_rows = [], []
-        for row in rows:
-            d_row, r_row = [], []
-            for c in columns:
-                v = row[c]
-                r_row.append(v)
-                if c in MEM_COLS:
-                    d_row.append(str(showamount(v, mt)))
-                elif c in SWAP_COLS:
-                    d_row.append(str(showamount(v, st)))
-                elif c in DELTA_MEM:
-                    d_row.append(showdelta(v, mt))
-                elif c in DELTA_SWP:
-                    d_row.append(showdelta(v, st))
-                else:
-                    d_row.append(str(v))
-            display_rows.append(d_row)
-            raw_rows.append(r_row)
+        display_rows = [[html_cell(c, row[c]) for c in columns] for row in rows]
+        raw_rows = [[row[c] for c in columns] for row in rows]
+        footer_row = None
+        if totals is not None:
+            footer_row = [html_cell(c, totals[c]) for c in columns]
         bar_col = next((i for i, c in enumerate(columns) if c == 'pss_b'), None)
-        _emit_html('smem diff', col_hdrs, display_rows, raw_rows, bar_col)
+        _emit_html('smem diff', col_hdrs, display_rows, raw_rows, bar_col, footer_row)
         return
 
     if _g.options.output == 'markdown':
@@ -772,28 +787,29 @@ def showdiff():
         cmd_w  = _g.options.cmd_width     if _g.options.cmd_width     > 0 else 27
         map_w  = _g.options.mapping_width if _g.options.mapping_width > 0 else 40
         role_w = _g.options.role_width    if _g.options.role_width    > 0 else 44
-        display_rows = []
-        for row in rows:
-            d_row = []
-            for c in columns:
-                v = row[c]
-                if c in MEM_COLS:
-                    d_row.append(str(showamount(v, mt)))
-                elif c in SWAP_COLS:
-                    d_row.append(str(showamount(v, st)))
-                elif c in DELTA_MEM:
-                    d_row.append(showdelta(v, mt))
-                elif c in DELTA_SWP:
-                    d_row.append(showdelta(v, st))
-                elif c == 'command':
-                    d_row.append(str(v)[:cmd_w])
-                elif c == 'map':
-                    d_row.append(str(v)[:map_w])
-                elif c == 'role':
-                    d_row.append(str(v)[:role_w])
-                else:
-                    d_row.append(str(v))
-            display_rows.append(d_row)
+        def md_cell(c, v):
+            if v == '':
+                return ''
+            if c in MEM_COLS:
+                return str(showamount(v, mt))
+            if c in SWAP_COLS:
+                return str(showamount(v, st))
+            if c in DELTA_MEM:
+                return showdelta(v, mt)
+            if c in DELTA_SWP:
+                return showdelta(v, st)
+            if c == 'command':
+                return str(v)[:cmd_w]
+            if c == 'map':
+                return str(v)[:map_w]
+            if c == 'role':
+                return str(v)[:role_w]
+            return str(v)
+
+        display_rows = [[md_cell(c, row[c]) for c in columns] for row in rows]
+        if totals is not None:
+            display_rows.append([('**%s**' % cell if cell else '')
+                                 for cell in (md_cell(c, totals[c]) for c in columns)])
         alignments = ['l' if c in TEXT_COLS else 'r' for c in columns]
         _emit_markdown(col_hdrs, display_rows, alignments)
         return
@@ -872,7 +888,12 @@ def showdiff():
             col_fmt.append('%8s');   col_fn.append(lambda v: v)
 
     fmt = ' '.join(col_fmt)
+    header = fmt % tuple(HEADERS.get(c, c) for c in columns)
     if not _g.options.no_header:
-        print(fmt % tuple(HEADERS.get(c, c) for c in columns))
+        print(header)
     for row in rows:
         print(fmt % tuple(fn(row[c]) for fn, c in zip(col_fn, columns)))
+    if totals is not None:
+        print('-' * len(header))
+        print(fmt % tuple('' if totals[c] == '' else fn(totals[c])
+                          for fn, c in zip(col_fn, columns)))
