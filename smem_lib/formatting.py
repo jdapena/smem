@@ -85,8 +85,9 @@ def showfields(fields, f) -> None:
     else:
         print("unknown field %s" % f)
     print("known fields:")
+    width = max([8] + [len(l) for l in fields])
     for l in sorted(fields):
-        print("%-8s %s" % (l, fields[l][-1]))
+        print("%-*s %s" % (width, l, fields[l][-1]))
 
 
 _HTML_CSS = """\

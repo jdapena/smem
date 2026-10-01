@@ -13,7 +13,7 @@ from smem_lib.collection import (
 )
 from smem_lib.readers import MemData, ProcessData, SwapsData, PsiData
 from smem_lib.formatting import (
-    showamount, showdelta, widthstr, showtable,
+    showamount, showdelta, widthstr, showtable, showfields,
     _emit_html, _emit_markdown,
 )
 from smem_lib.analysis import (
@@ -587,6 +587,28 @@ def showseries():
         print(' '.join(parts))
 
 
+_DIFF_MEM_COLUMNS = ['pss_a', 'pss_b', 'delta_pss', 'uss_a', 'uss_b', 'delta_uss',
+                     'rss_a', 'rss_b', 'delta_rss', 'swap_a', 'swap_b', 'delta_swap']
+
+_DIFF_COLUMN_DESCRIPTIONS = {
+    'status': "'+' only in NEW, '-' only in OLD, blank in both",
+    'pid': 'process ID',
+    'command': 'process command line',
+    'map': 'mapping name',
+    'role': 'Chromium process role',
+    'area': 'memory area',
+    'count_a': 'number of processes in OLD',
+    'count_b': 'number of processes in NEW',
+}
+for _m, _what in (('pss', 'proportional set size'), ('uss', 'unique set size'),
+                  ('rss', 'resident set size'), ('swap', 'swapped memory'),
+                  ('used', 'area in use'), ('cache', 'area used as cache'),
+                  ('noncache', 'area in use, excluding cache')):
+    _DIFF_COLUMN_DESCRIPTIONS[_m + '_a'] = '%s in OLD' % _what
+    _DIFF_COLUMN_DESCRIPTIONS[_m + '_b'] = '%s in NEW' % _what
+    _DIFF_COLUMN_DESCRIPTIONS['delta_' + _m] = 'change in %s (NEW - OLD)' % _what
+
+
 def showdiff():
     source_a, source_b = _g.options.diff
 
@@ -612,6 +634,7 @@ def showdiff():
                 delta_swap=b.get('swap', 0) - a.get('swap', 0),
             ))
         default_columns = 'status map pss_a pss_b delta_pss'
+        available = ['status', 'map'] + _DIFF_MEM_COLUMNS
 
     elif _g.options.system:
         sys_a = {area: (used, cache) for area, used, cache in _collect_system_values(source_a)}
@@ -629,6 +652,9 @@ def showdiff():
                 delta_noncache=(b_used - b_cache) - (a_used - a_cache),
             ))
         default_columns = 'area used_a used_b delta_used'
+        available = ['area', 'used_a', 'used_b', 'delta_used',
+                     'cache_a', 'cache_b', 'delta_cache',
+                     'noncache_a', 'noncache_b', 'delta_noncache']
 
     elif _g.options.chromium:
         data_a, cmdlines_a = _collect_proc_totals(source_a)
@@ -654,6 +680,7 @@ def showdiff():
                 delta_swap=b.get('swap', 0) - a.get('swap', 0),
             ))
         default_columns = 'status role count_a count_b pss_a pss_b delta_pss'
+        available = ['status', 'role', 'count_a', 'count_b'] + _DIFF_MEM_COLUMNS
 
     else:
         data_a, cmdlines_a = _collect_proc_totals(source_a)
@@ -692,6 +719,7 @@ def showdiff():
                 delta_swap=b.get('swap', 0) - a.get('swap', 0),
             ))
         default_columns = 'status pid command pss_a pss_b delta_pss'
+        available = ['status', 'pid', 'command'] + _DIFF_MEM_COLUMNS
 
     pss_min, rss_min = _mem_thresholds()
     if (pss_min or rss_min) and not _g.options.system:
@@ -707,6 +735,11 @@ def showdiff():
         rows.sort(key=lambda r: r.get(sort_key, 0), reverse=bool(_g.options.reverse))
 
     columns = (_g.options.columns or default_columns).split()
+    descriptions = {c: _DIFF_COLUMN_DESCRIPTIONS[c] for c in available}
+    missing = [c for c in columns if c not in descriptions]
+    if missing:
+        showfields({c: (d,) for c, d in descriptions.items()}, missing)
+        sys.exit(-1)
 
     mt = totalmem()
     st = MemData()("swaptotal")
